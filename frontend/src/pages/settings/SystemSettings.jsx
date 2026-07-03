@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import axios from 'axios';
-import { FiSettings, FiSliders, FiDatabase, FiBell, FiShield, FiCheckCircle, FiCloud, FiSave, FiMonitor, FiCopy, FiTerminal, FiAlertOctagon } from 'react-icons/fi';
+import { FiSettings, FiSliders, FiDatabase, FiBell, FiShield, FiCheckCircle, FiCloud, FiSave, FiMonitor, FiDownload, FiCopy, FiTerminal, FiAlertOctagon } from 'react-icons/fi';
 
 const AGENT_VERSION = '1.0.0';
 
@@ -337,13 +337,22 @@ const SystemSettings = () => {
                     <div className="text-white font-mono font-bold text-lg">{AGENT_VERSION}</div>
                   </div>
                 </div>
-                <a
-                  href="http://localhost:5000/api/telemetry/agent/download"
-                  className="btn-primary flex items-center gap-2 px-6 py-3 text-sm self-center"
-                  download
-                >
-                  <FiDownload /> DOWNLOAD SecureAssetsAgent.exe
-                </a>
+                <div className="flex flex-col sm:flex-row gap-3 self-center">
+                  <a
+                    href={`http://${window.location.hostname}:5000/api/telemetry/agent/download`}
+                    className="btn-primary flex items-center gap-2 px-6 py-3 text-sm"
+                    download
+                  >
+                    <FiDownload /> SecureAssetsAgent.exe
+                  </a>
+                  <a
+                    href={`http://${window.location.hostname}:5000/api/telemetry/agent/download-config`}
+                    className="btn-primary flex items-center gap-2 px-6 py-3 text-sm bg-slate-800 border-slate-600 hover:border-primary text-slate-300"
+                    download
+                  >
+                    <FiDownload /> config.json
+                  </a>
+                </div>
               </div>
 
               {/* Setup steps */}
@@ -353,26 +362,26 @@ const SystemSettings = () => {
                   {
                     step: '01',
                     title: 'Download the Agent',
-                    desc: 'Download SecureAssetsAgent.exe using the button above and copy it to the target Windows machine.',
+                    desc: 'Click DOWNLOAD above to get SecureAssetsAgent.exe. Copy it to the target Windows device.',
                   },
                   {
                     step: '02',
-                    title: 'Create config.json',
-                    desc: 'Place a config.json file in the same folder as the .exe:',
-                    code: `{\n  "SERVER_URL": "http://${window.location.hostname}:5000/device-data"\n}`,
+                    title: 'Create config.json (same folder as .exe)',
+                    desc: 'Place a config.json file next to the .exe — set SERVER_URL to this machine\'s IP:',
+                    code: `{\n  "SERVER_URL": "http://${window.location.hostname}:5000/device-data",\n  "INTERVAL_SEC": 5,\n  "TEST_MODE": false\n}`,
                     codeKey: 'config',
                   },
                   {
                     step: '03',
-                    title: 'Run install_service.bat as Admin',
-                    desc: 'Run the installer to register the agent as a Windows auto-start task:',
+                    title: 'Run as Auto-Start Service (Optional)',
+                    desc: 'To install as a Windows startup task, right-click install_service.bat → Run as Administrator. This makes the agent start automatically on every boot.',
                     code: 'install_service.bat  →  Right-click → Run as Administrator',
                     codeKey: 'bat',
                   },
                   {
                     step: '04',
                     title: 'Verify in Dashboard',
-                    desc: 'The device will appear in IoT Device Monitor and Live Device Health within ~5 seconds.',
+                    desc: 'The device will appear in Live Device Health within ~5 seconds of running the agent.',
                   },
                 ].map(s => (
                   <div key={s.step} className="flex gap-4 p-4 bg-slate-900/40 border border-slate-800 rounded-xl">

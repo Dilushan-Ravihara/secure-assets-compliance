@@ -158,51 +158,51 @@ router.get("/agent/version", (req, res) => {
   }
 });
 
-// Download the python telemetry agent file
+// Download the compiled agent exe — auto-configures SERVER_URL
 router.get("/agent/download", (req, res) => {
   try {
-    const fs = require("fs");
+    const fs   = require("fs");
     const path = require("path");
-    // Read base agent.py file
-    const agentPath = path.join(__dirname, "../../agent/agent.py");
-    if (!fs.existsSync(agentPath)) {
-      return res.status(404).json({ error: "Agent script file not found on server" });
+    const exePath = path.join(__dirname, "../downloads/SecureAssetsAgent.exe");
+
+    if (!fs.existsSync(exePath)) {
+      // Fallback: serve the .py script if exe not built yet
+      const agentPath = path.join(__dirname, "../../agent/agent.py");
+      if (!fs.existsSync(agentPath)) {
+        return res.status(404).json({ error: "Agent not found. Run agent/build_exe.bat first." });
+      }
+      let agentCode = fs.readFileSync(agentPath, "utf8");
+      const protocol = req.headers["x-forwarded-proto"] || "http";
+      const host     = req.get("host") || "localhost:5000";
+      const dynamicUrl = `${protocol}://${host}/device-data`;
+      agentCode = agentCode.replace(/SERVER_URL\s*=\s*".*?"/, `SERVER_URL   = "${dynamicUrl}"`);
+      res.setHeader("Content-Type", "text/plain");
+      res.setHeader("Content-Disposition", "attachment; filename=agent.py");
+      return res.send(agentCode);
     }
-    let agentCode = fs.readFileSync(agentPath, "utf8");
-    
-    // Replace SERVER_URL with the dynamic caller's host
-    const protocol = req.headers["x-forwarded-proto"] || "http";
-    const host = req.get("host") || "localhost:5000";
-    const dynamicUrl = `${protocol}://${host}/device-data`;
-    
-    agentCode = agentCode.replace(
-      /SERVER_URL\s*=\s*".*?"/,
-      `SERVER_URL   = "${dynamicUrl}"`
-    );
-    
-    res.setHeader("Content-Type", "text/plain");
-    res.setHeader("Content-Disposition", "attachment; filename=secure_agent.py");
-    res.send(agentCode);
+
+    res.setHeader("Content-Disposition", "attachment; filename=SecureAssetsAgent.exe");
+    res.sendFile(exePath);
   } catch (err) {
     console.error("Agent download error:", err.message);
-    res.status(500).json({ error: "Failed to download agent script" });
+    res.status(500).json({ error: "Failed to download agent" });
   }
 });
 
-// Download the pre-compiled python telemetry agent exe
+// Download the pre-compiled python telemetry agent exe (explicit route)
 router.get("/agent/download-exe", (req, res) => {
   try {
-    const fs = require("fs");
+    const fs   = require("fs");
     const path = require("path");
     const exePath = path.join(__dirname, "../downloads/SecureAssetsAgent.exe");
-    
+
     if (!fs.existsSync(exePath)) {
       return res.status(404).json({ 
         error: "Compiled executable not found on server", 
         message: "Please run agent/build_exe.bat on a Windows machine first to compile the agent and place the executable on the server." 
       });
     }
-    
+
     res.setHeader("Content-Disposition", "attachment; filename=SecureAssetsAgent.exe");
     res.sendFile(exePath);
   } catch (err) {
@@ -210,6 +210,28 @@ router.get("/agent/download-exe", (req, res) => {
     res.status(500).json({ error: "Failed to download compiled agent application" });
   }
 });
+
+// Download the pre-configured config.json for the agent
+router.get("/agent/download-config", (req, res) => {
+  try {
+    const protocol  = req.headers["x-forwarded-proto"] || "http";
+    const hostHeader = req.get("host") || "localhost:5000";
+    // Use the host IP only (not port from request — agent always hits 5000)
+    const hostOnly  = hostHeader.split(":")[0];
+    const config = {
+      SERVER_URL:   `${protocol}://${hostOnly}:5000/device-data`,
+      INTERVAL_SEC: 5,
+      TEST_MODE:    false
+    };
+    res.setHeader("Content-Type", "application/json");
+    res.setHeader("Content-Disposition", "attachment; filename=config.json");
+    res.send(JSON.stringify(config, null, 2));
+  } catch (err) {
+    console.error("Config download error:", err.message);
+    res.status(500).json({ error: "Failed to generate config" });
+  }
+});
+
 
 // Reboot all online devices (takes them offline, queues command for agent to execute)
 router.post("/devices/restart-all", authenticateToken, async (req, res) => {
