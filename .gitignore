@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+bower_components/
+
+# Build outputs
+dist/
+build/
+bin/
+*.exe
+*.pyc
+
+# Local config & logs
+.env
+*.log
+.continue/
+.vscode/
+config.json
+
+# OS specific files
+.DS_Store
+Thumbs.db
