@@ -11,6 +11,9 @@ const Login = () => {
   const [toastMsg, setToastMsg] = useState('');
   const [toastType, setToastType] = useState('success');
   const [loading, setLoading] = useState(false);
+  const [show2FA, setShow2FA] = useState(false);
+  const [twoFactorCode, setTwoFactorCode] = useState('');
+  const [tempToken, setTempToken] = useState('');
 
   // Face Scan biometric terminal states
   const [isFaceModalOpen, setIsFaceModalOpen] = useState(false);
@@ -36,6 +39,15 @@ const Login = () => {
         email: email || 'admin@company.com', // fallback for default demo ease
         password 
       });
+      
+      if (response.data.requires2FA) {
+        setTempToken(response.data.tempToken);
+        setShow2FA(true);
+        showNotification('Two-Factor Authentication required.', 'info');
+        setLoading(false);
+        return;
+      }
+      
       const { token, user } = response.data;
       // Persist auth token and user role
       localStorage.setItem('token', token);
@@ -45,6 +57,29 @@ const Login = () => {
     } catch (err) {
       console.error(err);
       const errMsg = err.response?.data?.error || 'Uplink failed. Invalid operator credentials.';
+      showNotification(errMsg, 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerify2FA = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const response = await axios.post('http://localhost:5000/api/auth/2fa/verify', {
+        tempToken,
+        token: twoFactorCode
+      });
+      
+      const { token, user } = response.data;
+      localStorage.setItem('token', token);
+      localStorage.setItem('user', JSON.stringify(user));
+      showNotification(`Identity verified. Welcome, ${user.name}!`, 'success');
+      setTimeout(() => navigate('/dashboard'), 1000);
+    } catch (err) {
+      console.error(err);
+      const errMsg = err.response?.data?.error || 'Invalid 2FA code.';
       showNotification(errMsg, 'error');
     } finally {
       setLoading(false);
@@ -108,7 +143,7 @@ const Login = () => {
         try {
           // Perform real backend authentication login for a secure session
           const response = await axios.post('http://localhost:5000/api/auth/login', { 
-            email: 'admin@company.com', 
+            email: 'superadmin@company.com', 
             password: 'admin123' 
           });
           const { token, user } = response.data;
@@ -170,9 +205,41 @@ const Login = () => {
           <h2 className="text-2xl font-bold text-white tracking-widest font-mono">SECURE<span className="text-primary">ASSETS</span></h2>
           <p className="text-slate-500 text-xs mt-1 uppercase tracking-widest">Enterprise Access Terminal</p>
         </div>
-        <form onSubmit={handleLogin} className="space-y-6">
-          <div>
-            <label className="cyber-label">Operator Email</label>
+        
+        {show2FA ? (
+          <form onSubmit={handleVerify2FA} className="space-y-6 animate-[fadeIn_0.3s_ease-out]">
+            <div className="text-center text-sm text-slate-300 mb-6">
+              Please enter the 6-digit authentication code from your authenticator app.
+            </div>
+            <div>
+              <label className="cyber-label">Authentication Code</label>
+              <div className="relative">
+                <FiLock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" />
+                <input 
+                  type="text" 
+                  className="cyber-input pl-12 text-center tracking-[0.5em] text-lg font-mono" 
+                  placeholder="000000"
+                  maxLength={6}
+                  value={twoFactorCode}
+                  onChange={e => setTwoFactorCode(e.target.value)}
+                  required 
+                  autoFocus
+                />
+              </div>
+            </div>
+            <div className="pt-2 flex flex-col gap-3">
+              <button type="submit" disabled={loading} className="w-full btn-primary py-3 text-lg tracking-wider">
+                {loading ? 'VERIFYING...' : 'VERIFY CODE'} <FiCheckCircle className="ml-1" />
+              </button>
+              <button type="button" onClick={() => setShow2FA(false)} className="w-full text-slate-400 hover:text-white transition-colors text-xs uppercase tracking-wider mt-2">
+                Back to Login
+              </button>
+            </div>
+          </form>
+        ) : (
+          <form onSubmit={handleLogin} className="space-y-6 animate-[fadeIn_0.3s_ease-out]">
+            <div>
+              <label className="cyber-label">Operator Email</label>
             <div className="relative">
               <FiMail className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" />
               <input 
@@ -217,6 +284,7 @@ const Login = () => {
             </button>
           </div>
         </form>
+        )}
       </div>
 
       {/* Futuristic Biometric Scanner Modal Overlay */}

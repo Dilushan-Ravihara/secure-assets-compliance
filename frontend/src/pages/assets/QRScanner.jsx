@@ -241,7 +241,7 @@ const QRScanner = () => {
   };
 
   // Fetch asset and telemetry data for a successfully scanned QR ID
-  const handleRealDecode = async (assetId) => {
+  const handleRealDecode = async (assetId, skipLogging = false) => {
     setScanning(true);
     setScanStatus('scanning');
     setStatusMsg(`Decoding scanned tag payload: "${assetId}"...`);
@@ -264,7 +264,9 @@ const QRScanner = () => {
       setScanStatus('success');
       setStatusMsg(`Successfully matched asset: ${asset.asset_id}`);
       
-      logScanHistory(asset.asset_id, 'Camera QR Tag Decoded');
+      if (!skipLogging) {
+        logScanHistory(asset.asset_id, 'Camera QR Tag Decoded');
+      }
       triggerToast(`Uplink established: ${asset.asset_id}`);
     } catch (err) {
       console.error(err);
@@ -272,7 +274,9 @@ const QRScanner = () => {
       setTelemetry(null);
       setScanStatus('error');
       setStatusMsg(`Error: Scanned asset "${assetId}" is not in registry.`);
-      logScanHistory(assetId, 'Scan Failed (Not Found)');
+      if (!skipLogging) {
+        logScanHistory(assetId, 'Scan Failed (Not Found)');
+      }
       triggerToast(`Failed to locate scanned asset: ${assetId}`, 'error');
     } finally {
       setScanning(false);
@@ -502,9 +506,6 @@ const QRScanner = () => {
         category: selectedAsset.category,
         status: 'in_use',
         condition: selectedAsset.condition,
-        purchase_date: selectedAsset.purchase_date,
-        warranty_expiry: selectedAsset.warranty_expiry,
-        purchase_cost: selectedAsset.purchase_cost,
         location: assignForm.location || selectedAsset.location,
         notes: selectedAsset.notes,
         assigned_to: assignForm.employeeId ? parseInt(assignForm.employeeId) : null
@@ -538,24 +539,7 @@ const QRScanner = () => {
       });
     }
 
-    if (selectedAsset.warranty_expiry) {
-      const days = Math.ceil((new Date(selectedAsset.warranty_expiry).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
-      if (days < 0) {
-        alerts.push({
-          id: 'warranty',
-          message: 'HARDWARE WARRANTY EXPIRED',
-          desc: `Warranty period ended on ${new Date(selectedAsset.warranty_expiry).toLocaleDateString()}. Support contract required.`,
-          severity: 'HIGH'
-        });
-      } else if (days < 90) {
-        alerts.push({
-          id: 'warranty',
-          message: 'WARRANTY EXPIRING SOON',
-          desc: `Manufacturer warranty expires in ${days} days. Review device refresh plans.`,
-          severity: 'WARNING'
-        });
-      }
-    }
+
 
     if (telemetry && telemetry.risk_score > 40) {
       alerts.push({
@@ -1101,7 +1085,12 @@ const QRScanner = () => {
               </thead>
               <tbody className="text-xs text-slate-350 divide-y divide-slate-800/60 font-mono">
                 {scanHistory.map(log => (
-                  <tr key={log.id} className="hover:bg-white/5 transition-colors">
+                  <tr 
+                    key={log.id} 
+                    className="hover:bg-white/5 transition-colors cursor-pointer"
+                    onClick={() => handleRealDecode(log.assetId, true)}
+                    title={`Click to inspect details for ${log.assetId}`}
+                  >
                     <td className="px-6 py-3 text-slate-500">{new Date(log.date).toLocaleString()}</td>
                     <td className="px-6 py-3 text-white font-bold">{log.user}</td>
                     <td className="px-6 py-3 text-primary">{log.assetId}</td>
@@ -1114,7 +1103,10 @@ const QRScanner = () => {
                     </td>
                     <td className="px-6 py-3 text-right">
                       <button
-                        onClick={() => deleteScanHistoryItem(log.id)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteScanHistoryItem(log.id);
+                        }}
                         className="text-slate-500 hover:text-danger transition-colors p-1"
                         title="Remove Scan Log Entry"
                       >

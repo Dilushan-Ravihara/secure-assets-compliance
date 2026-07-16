@@ -1,8 +1,17 @@
 import { useState, useEffect } from 'react';
-import { FiUsers, FiUserPlus, FiSearch, FiCheckCircle, FiXCircle } from 'react-icons/fi';
+import { FiUsers, FiUserPlus, FiSearch, FiCheckCircle, FiXCircle, FiTrash2 } from 'react-icons/fi';
 import axios from 'axios';
 
 const UsersManagement = () => {
+  const currentUser = (() => {
+    try {
+      return JSON.parse(localStorage.getItem('user') || '{}');
+    } catch {
+      return {};
+    }
+  })();
+  const isAdmin = currentUser.role === 'admin' || currentUser.role === 'super_admin';
+
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [, setError] = useState('');
@@ -75,6 +84,22 @@ const UsersManagement = () => {
     }
   };
 
+  // Delete a user account from database
+  const handleDeleteUser = async (userId, userName) => {
+    if (!window.confirm(`⚠️ Are you absolutely sure you want to delete the account for "${userName}"?\n\nThis will remove the user permanently from the database.`)) return;
+    try {
+      const token = localStorage.getItem('token');
+      const config = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
+      await axios.delete(`http://localhost:5000/api/auth/users/${userId}`, config);
+      setUsers(prev => prev.filter(u => u.id !== userId));
+      showToastMsg(`User "${userName}" deleted successfully.`);
+    } catch (err) {
+      console.error(err);
+      const errMsg = err.response?.data?.error || 'Failed to delete user account.';
+      showToastMsg(errMsg, 'error');
+    }
+  };
+
   // Create a new user profile
   const handleCreateUser = async (e) => {
     e.preventDefault();
@@ -131,9 +156,11 @@ const UsersManagement = () => {
           </h1>
           <p className="text-slate-400 text-sm">Assign role-based access and manage platform credentials</p>
         </div>
-        <button onClick={() => setShowModal(true)} className="btn-primary text-sm py-2 px-6 flex items-center gap-2">
-          <FiUserPlus /> ADD USER
-        </button>
+        {isAdmin && (
+          <button onClick={() => setShowModal(true)} className="btn-primary text-sm py-2 px-6 flex items-center gap-2">
+            <FiUserPlus /> ADD USER
+          </button>
+        )}
       </div>
 
       {/* Search & Filter */}
@@ -206,35 +233,52 @@ const UsersManagement = () => {
                     <td className="px-6 py-4 font-mono text-slate-400">{user.email}</td>
                     <td className="px-6 py-4">{user.department || '—'}</td>
                     <td className="px-6 py-4">
-                      {user.role === 'super_admin' ? (
+                      {user.role === 'super_admin' && currentUser.role !== 'super_admin' ? (
                         <span className="text-xs text-danger bg-danger/10 border border-danger/20 px-2 py-1 rounded font-bold font-mono">
                           🔴 SUPER ADMIN
                         </span>
                       ) : (
                         <select
                           value={user.role}
+                          disabled={!isAdmin || user.id === currentUser.id}
                           onChange={(e) => handleRoleChange(user.id, e.target.value)}
-                          className="bg-slate-900 border border-slate-700 text-xs text-slate-200 px-2.5 py-1 rounded focus:outline-none focus:border-primary font-mono cursor-pointer"
+                          className={`bg-slate-900 border border-slate-700 text-xs text-slate-200 px-2.5 py-1 rounded focus:outline-none focus:border-primary font-mono ${isAdmin && user.id !== currentUser.id ? 'cursor-pointer' : 'cursor-not-allowed opacity-75'}`}
                         >
                           <option value="admin">🟠 ADMIN</option>
                           <option value="viewer">🟢 VIEWER</option>
+                          {currentUser.role === 'super_admin' && (
+                            <option value="super_admin">🔴 SUPER ADMIN</option>
+                          )}
                         </select>
                       )}
                     </td>
                     <td className="px-6 py-4">
                       <button
-                        onClick={() => handleStatusToggle(user.id, user.is_active)}
+                        onClick={() => isAdmin && handleStatusToggle(user.id, user.is_active)}
                         className={`text-xs font-mono font-bold px-3 py-1 rounded-full border transition-all ${
                           user.is_active 
-                            ? 'bg-success/10 text-success border-success/30 hover:bg-success/20' 
-                            : 'bg-danger/10 text-danger border-danger/30 hover:bg-danger/20'
-                        }`}
+                            ? 'bg-success/10 text-success border-success/30' + (isAdmin ? ' hover:bg-success/20' : '') 
+                            : 'bg-danger/10 text-danger border-danger/30' + (isAdmin ? ' hover:bg-danger/20' : '')
+                        } ${!isAdmin ? 'cursor-not-allowed opacity-75' : ''}`}
                       >
                         {user.is_active ? 'ACTIVE' : 'INACTIVE'}
                       </button>
                     </td>
-                    <td className="px-6 py-4 text-right text-xs font-mono text-slate-500">
-                      Created: {new Date(user.created_at).toLocaleDateString()}
+                    <td className="px-6 py-4 text-right">
+                      <div className="flex justify-end items-center gap-4">
+                        <span className="text-[11px] font-mono text-slate-500">
+                          Created: {new Date(user.created_at).toLocaleDateString()}
+                        </span>
+                        {isAdmin && user.role !== 'super_admin' && (
+                          <button
+                            onClick={() => handleDeleteUser(user.id, user.name)}
+                            className="text-danger hover:text-red-400 p-1 bg-danger/10 border border-danger/20 hover:bg-danger/20 rounded transition-all"
+                            title="Delete User Account"
+                          >
+                            <FiTrash2 className="text-sm" />
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))
@@ -307,6 +351,9 @@ const UsersManagement = () => {
                   >
                     <option value="viewer">Viewer (Read-only)</option>
                     <option value="admin">Admin (Full Access)</option>
+                    {currentUser.role === 'super_admin' && (
+                      <option value="super_admin">Super Admin (System Owner)</option>
+                    )}
                   </select>
                 </div>
                 <div>

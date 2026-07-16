@@ -136,6 +136,18 @@ const MaintenanceLogs = () => {
     setCtxMenu({ ticket, x: e.clientX, y: e.clientY });
   };
 
+  const handleDragStart = (e, ticket) => {
+    e.dataTransfer.setData('text/plain', ticket.id.toString());
+  };
+
+  const handleDrop = async (e, newStatus) => {
+    e.preventDefault();
+    const ticketId = parseInt(e.dataTransfer.getData('text/plain'), 10);
+    if (!isNaN(ticketId)) {
+      await setStatus(ticketId, newStatus);
+    }
+  };
+
   const pendingTickets    = tickets.filter(t => t.status === 'pending');
   const inProgressTickets = tickets.filter(t => t.status === 'in_progress');
   const completedTickets  = tickets.filter(t => t.status === 'completed');
@@ -144,21 +156,35 @@ const MaintenanceLogs = () => {
     const prio = PRIORITY_COLORS[ticket.priority] || PRIORITY_COLORS.low;
     return (
       <div
+        draggable="true"
+        onDragStart={(e) => handleDragStart(e, ticket)}
         onContextMenu={(e) => openCtxMenu(e, ticket)}
         onClick={() => setDetailTicket(ticket)}
-        className="bg-slate-800/80 border border-slate-700 p-3 rounded-lg w-full text-left hover:border-primary/50 transition-all shadow-lg cursor-pointer mb-3 relative overflow-hidden group"
+        className="bg-slate-800/80 border border-slate-700 p-3 rounded-lg w-full text-left hover:border-primary/50 transition-all shadow-lg cursor-pointer mb-3 relative overflow-hidden group active:cursor-grabbing select-none"
       >
         {/* Hover hint */}
         <div className="absolute top-0 right-0 bg-primary/20 text-primary text-[8px] font-bold px-2 py-1 rounded-bl-lg opacity-0 group-hover:opacity-100 transition-opacity font-mono">
-          RIGHT-CLICK TO MANAGE
+          DRAG OR RIGHT-CLICK TO MANAGE
         </div>
 
         {/* Header row */}
-        <div className="flex justify-between items-start mb-2">
-          <span className="text-[10px] font-mono text-slate-400 font-bold bg-slate-900 px-2 py-0.5 rounded">{ticket.ticket_id}</span>
-          <span className={`text-[9px] font-mono font-bold uppercase px-2 py-0.5 rounded border ${prio.badge}`}>
-            {ticket.priority}
-          </span>
+        <div className="flex justify-between items-center mb-2">
+          <span className="text-[10px] font-mono text-slate-400 font-bold bg-slate-900 px-2 py-0.5 rounded mr-2">{ticket.ticket_id}</span>
+          <div className="flex items-center gap-1.5 min-w-0">
+            <select
+              value={ticket.status}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => setStatus(ticket.id, e.target.value)}
+              className="bg-slate-900 border border-slate-700 text-[10px] text-slate-300 px-1 py-0.5 rounded font-mono cursor-pointer focus:outline-none focus:border-primary/50"
+            >
+              <option value="pending">Pending Triage</option>
+              <option value="in_progress">In Repair</option>
+              <option value="completed">Completed</option>
+            </select>
+            <span className={`text-[9px] font-mono font-bold uppercase px-2 py-0.5 rounded border flex-shrink-0 ${prio.badge}`}>
+              {ticket.priority}
+            </span>
+          </div>
         </div>
 
         <h4 className="text-white text-sm font-bold mb-1 leading-tight">{ticket.title}</h4>
@@ -229,7 +255,11 @@ const MaintenanceLogs = () => {
       <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-6 min-h-0">
 
         {/* Column 1: Pending Triage */}
-        <div className="glass-panel flex flex-col border-t-4 border-t-warning">
+        <div 
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => handleDrop(e, 'pending')}
+          className="glass-panel flex flex-col border-t-4 border-t-warning"
+        >
           <div className="p-4 border-b border-slate-700 flex justify-between items-center bg-warning/5 rounded-t-xl">
             <h3 className="text-white font-bold uppercase tracking-wider text-sm flex items-center gap-2">
               <FiAlertCircle className="text-warning" /> Pending Triage
@@ -252,7 +282,11 @@ const MaintenanceLogs = () => {
         </div>
 
         {/* Column 2: In Repair */}
-        <div className="glass-panel flex flex-col border-t-4 border-t-primary">
+        <div 
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => handleDrop(e, 'in_progress')}
+          className="glass-panel flex flex-col border-t-4 border-t-primary"
+        >
           <div className="p-4 border-b border-slate-700 flex justify-between items-center bg-primary/5 rounded-t-xl">
             <h3 className="text-white font-bold uppercase tracking-wider text-sm flex items-center gap-2">
               <FiClock className="text-primary" /> In Repair
@@ -275,7 +309,11 @@ const MaintenanceLogs = () => {
         </div>
 
         {/* Column 3: Completed */}
-        <div className="glass-panel flex flex-col border-t-4 border-t-success">
+        <div 
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => handleDrop(e, 'completed')}
+          className="glass-panel flex flex-col border-t-4 border-t-success"
+        >
           <div className="p-4 border-b border-slate-700 flex justify-between items-center bg-success/5 rounded-t-xl">
             <h3 className="text-white font-bold uppercase tracking-wider text-sm flex items-center gap-2">
               <FiCheckCircle className="text-success" /> Completed
@@ -342,7 +380,7 @@ const MaintenanceLogs = () => {
               onClick={() => deleteTicket(ctxMenu.ticket)}
               className="w-full text-left px-3 py-2 rounded text-xs font-mono flex items-center gap-2 text-danger hover:bg-danger/10 transition-colors"
             >
-              <FiTrash2 className="text-sm" /> Delete from Database
+              <FiTrash2 className="text-sm" /> Delete
             </button>
           </div>
         </div>
@@ -429,7 +467,7 @@ const MaintenanceLogs = () => {
                 onClick={() => deleteTicket(detailTicket)}
                 className="flex items-center gap-2 text-xs font-mono text-danger hover:text-white hover:bg-danger px-4 py-2 rounded transition-all border border-danger/30"
               >
-                <FiTrash2 /> DELETE FROM DATABASE
+                <FiTrash2 /> DELETE
               </button>
             </div>
           </div>

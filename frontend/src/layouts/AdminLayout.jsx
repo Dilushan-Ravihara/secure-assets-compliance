@@ -1,9 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { 
   FiGrid, FiBox, FiUsers, FiShield, FiActivity, FiAlertTriangle, 
   FiTool, FiFileText, FiCpu, FiMapPin, FiSettings, FiLogOut, FiBell, FiSearch,
-  FiSun, FiMoon, FiWifi, FiList, FiGlobe
+  FiSun, FiMoon, FiWifi, FiList, FiGlobe, FiClock
 } from 'react-icons/fi';
 import axios from 'axios';
 import { socket } from '../services/socket';
@@ -28,6 +28,60 @@ const AdminLayout = () => {
   // Read saved theme from localStorage, default to dark base theme
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
   const [alerts, setAlerts] = useState([]);
+
+  // ── Feature 6: Session Timeout ──────────────────────────────────────────────
+  const SESSION_MS = 30 * 60 * 1000; // 30 minutes of inactivity
+  const WARN_MS    = 60 * 1000;       // warn 60 seconds before expiry
+  const [sessionWarning, setSessionWarning] = useState(false);
+  const [countdown, setCountdown]           = useState(60);
+  const timeoutRef   = useRef(null);
+  const warnRef      = useRef(null);
+  const countdownRef = useRef(null);
+
+  const doLogout = useCallback(() => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    navigate('/');
+  }, [navigate]);
+
+  const resetSessionTimer = useCallback(() => {
+    clearTimeout(timeoutRef.current);
+    clearTimeout(warnRef.current);
+    clearInterval(countdownRef.current);
+    setSessionWarning(false);
+    setCountdown(60);
+
+    // Show warning 60 seconds before logout
+    warnRef.current = setTimeout(() => {
+      setSessionWarning(true);
+      let secs = 60;
+      setCountdown(secs);
+      countdownRef.current = setInterval(() => {
+        secs -= 1;
+        setCountdown(secs);
+        if (secs <= 0) {
+          clearInterval(countdownRef.current);
+          doLogout();
+        }
+      }, 1000);
+    }, SESSION_MS - WARN_MS);
+
+    // Hard logout after full timeout
+    timeoutRef.current = setTimeout(doLogout, SESSION_MS);
+  }, [doLogout, SESSION_MS, WARN_MS]);
+
+  useEffect(() => {
+    const events = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll'];
+    events.forEach(ev => window.addEventListener(ev, resetSessionTimer, { passive: true }));
+    resetSessionTimer(); // start timer on mount
+    return () => {
+      events.forEach(ev => window.removeEventListener(ev, resetSessionTimer));
+      clearTimeout(timeoutRef.current);
+      clearTimeout(warnRef.current);
+      clearInterval(countdownRef.current);
+    };
+  }, [resetSessionTimer]);
+  // ────────────────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     if (theme === 'light') {
@@ -111,11 +165,12 @@ const AdminLayout = () => {
   const userInitial = (currentUser.name || 'U').charAt(0).toUpperCase();
 
   // Wipe token and user info, then redirect to login page
-  const handleLogout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
-    navigate('/');
-  };
+  const handleLogout = useCallback(() => {
+    clearTimeout(timeoutRef.current);
+    clearTimeout(warnRef.current);
+    clearInterval(countdownRef.current);
+    doLogout();
+  }, [doLogout]);
 
   // Handle topbar search — navigate to assets page with query string
   const handleSearch = (e) => {
@@ -127,6 +182,36 @@ const AdminLayout = () => {
 
   return (
     <div className="flex min-h-screen bg-darkBase">
+
+      {/* ── Feature 6: Session Warning Modal ─────────────────────────────────── */}
+      {sessionWarning && (
+        <div className="fixed inset-0 z-[500] flex items-center justify-center bg-black/80 backdrop-blur-sm">
+          <div className="glass-panel w-96 p-8 text-center border-t-4 border-t-warning shadow-[0_0_60px_rgba(245,158,11,0.3)] animate-[fadeIn_0.3s_ease-out]">
+            <div className="w-16 h-16 rounded-full bg-warning/10 border border-warning/30 flex items-center justify-center mx-auto mb-4">
+              <FiClock className="text-warning text-3xl" />
+            </div>
+            <h2 className="text-xl font-bold text-white mb-2 font-mono tracking-wider">SESSION EXPIRING</h2>
+            <p className="text-slate-400 text-sm mb-6">Your session will automatically end in:</p>
+            <div className={`text-6xl font-bold font-mono mb-6 tabular-nums transition-colors ${
+              countdown <= 10 ? 'text-danger animate-pulse' : 'text-warning'
+            }`}>{countdown}s</div>
+            <div className="flex gap-3 justify-center">
+              <button
+                onClick={resetSessionTimer}
+                className="btn-primary px-8 py-2.5 text-sm font-mono"
+              >
+                STAY LOGGED IN
+              </button>
+              <button
+                onClick={handleLogout}
+                className="px-6 py-2.5 text-sm font-mono text-danger border border-danger/30 rounded-lg hover:bg-danger/10 transition-colors"
+              >
+                LOGOUT NOW
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {/* Sidebar */}
       <aside className="w-64 bg-darkCard/80 backdrop-blur-xl border-r border-slate-800/80 flex flex-col fixed inset-y-0 z-30 shadow-[4px_0_24px_rgba(0,0,0,0.5)]">
         <div className="h-16 flex items-center px-6 border-b border-slate-800/80 bg-black/20">

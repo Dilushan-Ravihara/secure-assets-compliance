@@ -94,13 +94,159 @@ def get_system_serial():
     # Ultimate fallback: return a derived serial based on hostname
     return f"SN-{socket.gethostname().upper()}"
 
+def get_system_brand():
+    is_win = platform.system() == "Windows"
+    is_nix = platform.system() == "Linux"
+    is_mac = platform.system() == "Darwin"
+
+    win_startupinfo = None
+    if is_win:
+        win_startupinfo = subprocess.STARTUPINFO()
+        win_startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        win_startupinfo.wShowWindow = 0
+
+    if is_win:
+        try:
+            res = subprocess.run(
+                ["powershell", "-Command", "Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Manufacturer"],
+                capture_output=True, text=True, timeout=5,
+                startupinfo=win_startupinfo
+            )
+            val = res.stdout.strip()
+            if val and "Error" not in val:
+                return val
+        except Exception:
+            pass
+        try:
+            res = subprocess.run(
+                ["wmic", "computersystem", "get", "manufacturer"],
+                capture_output=True, text=True, timeout=5,
+                startupinfo=win_startupinfo
+            )
+            lines = [l.strip() for l in res.stdout.splitlines() if l.strip()]
+            if len(lines) > 1:
+                return lines[1]
+        except Exception:
+            pass
+    elif is_nix:
+        for path in ["/sys/class/dmi/id/sys_vendor", "/sys/class/dmi/id/chassis_vendor"]:
+            if os.path.exists(path):
+                try:
+                    with open(path, "r") as f:
+                        val = f.read().strip()
+                        if val:
+                            return val
+                except Exception:
+                    pass
+    elif is_mac:
+        return "Apple"
+    return "Unknown Brand"
+
+def get_system_model():
+    is_win = platform.system() == "Windows"
+    is_nix = platform.system() == "Linux"
+    is_mac = platform.system() == "Darwin"
+
+    win_startupinfo = None
+    if is_win:
+        win_startupinfo = subprocess.STARTUPINFO()
+        win_startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        win_startupinfo.wShowWindow = 0
+
+    if is_win:
+        try:
+            res = subprocess.run(
+                ["powershell", "-Command", "Get-CimInstance -ClassName Win32_ComputerSystem | Select-Object -ExpandProperty Model"],
+                capture_output=True, text=True, timeout=5,
+                startupinfo=win_startupinfo
+            )
+            val = res.stdout.strip()
+            if val and "Error" not in val:
+                return val
+        except Exception:
+            pass
+        try:
+            res = subprocess.run(
+                ["wmic", "computersystem", "get", "model"],
+                capture_output=True, text=True, timeout=5,
+                startupinfo=win_startupinfo
+            )
+            lines = [l.strip() for l in res.stdout.splitlines() if l.strip()]
+            if len(lines) > 1:
+                return lines[1]
+        except Exception:
+            pass
+    elif is_nix:
+        for path in ["/sys/class/dmi/id/product_name", "/sys/class/dmi/id/product_version"]:
+            if os.path.exists(path):
+                try:
+                    with open(path, "r") as f:
+                        val = f.read().strip()
+                        if val:
+                            return val
+                except Exception:
+                    pass
+    elif is_mac:
+        try:
+            res = subprocess.run(
+                ["sysctl", "-n", "hw.model"],
+                capture_output=True, text=True, timeout=5
+            )
+            val = res.stdout.strip()
+            if val:
+                return val
+        except Exception:
+            pass
+    return "Generic PC"
+
+def get_friendly_os_name():
+    is_win = platform.system() == "Windows"
+    if not is_win:
+        return f"{platform.system()} {platform.release()}"
+    
+    # Try powershell CIM Win32_OperatingSystem (Accurate on Win 11)
+    win_startupinfo = subprocess.STARTUPINFO()
+    win_startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    win_startupinfo.wShowWindow = 0
+    try:
+        res = subprocess.run(
+            ["powershell", "-Command", "(Get-CimInstance Win32_OperatingSystem).Caption"],
+            capture_output=True, text=True, timeout=5,
+            startupinfo=win_startupinfo
+        )
+        val = res.stdout.strip()
+        if val and "Error" not in val:
+            if val.startswith("Microsoft "):
+                val = val[10:]
+            return val
+    except Exception:
+        pass
+
+    # Registry Fallback
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion")
+        product_name, _ = winreg.QueryValueEx(key, "ProductName")
+        try:
+            display_version, _ = winreg.QueryValueEx(key, "DisplayVersion")
+            if display_version:
+                return f"{product_name} ({display_version})"
+        except Exception:
+            pass
+        return product_name
+    except Exception:
+        return f"Windows {platform.release()}"
+
 # ─── Configuration ─────────────────────────────────────────────────────────────
-SERVER_URL    = "http://localhost:5000/device-data"   # Change to your server IP
+SERVER_URL    = "https://secureassets-viva.loca.lt/device-data"   # Default to public tunnel URL
 INTERVAL_SEC  = 5                                     # How often to send data
 DEVICE_ID     = socket.gethostname()                  # Unique device name
 DEVICE_NAME   = socket.gethostname()
 AGENT_VERSION = "1.0"
 TEST_MODE     = False
+LATITUDE      = None                                  # Custom coordinate override
+LONGITUDE     = None                                  # Custom coordinate override
+LOCATION      = None                                  # Custom text location override
 
 # ─── Command Line & Config File Overrides ──────────────────────────────────────
 # Check if config.json exists in same folder as script (or exe)
@@ -130,6 +276,13 @@ if os.path.exists(config_path):
             if "TEST_MODE" in cfg:
                 TEST_MODE = bool(cfg["TEST_MODE"])
                 print(f"[*] Loaded TEST_MODE from config.json: {TEST_MODE}")
+            if "LATITUDE" in cfg and cfg["LATITUDE"] is not None:
+                LATITUDE = float(cfg["LATITUDE"])
+            if "LONGITUDE" in cfg and cfg["LONGITUDE"] is not None:
+                LONGITUDE = float(cfg["LONGITUDE"])
+            if "LOCATION" in cfg and cfg["LOCATION"] is not None:
+                LOCATION = str(cfg["LOCATION"])
+                print(f"[*] Custom location loaded: {LOCATION} ({LATITUDE}, {LONGITUDE})")
     except Exception as e:
         print(f"[*] Failed to read config.json: {e}")
 
@@ -285,6 +438,10 @@ def check_unauthorized_software():
 
 # ─── Geolocation Check ────────────────────────────────────────────────────────
 def get_ip_geolocation():
+    # If custom coordinates are loaded from config.json, prioritize them
+    if LATITUDE is not None and LONGITUDE is not None:
+        return LATITUDE, LONGITUDE, LOCATION or "Custom Configured Location"
+        
     try:
         # Use ip-api.com to get lat/lon based on external IP
         resp = requests.get("http://ip-api.com/json/", timeout=3)
@@ -314,13 +471,13 @@ def check_for_updates():
         version_url = f"{base_url}/api/telemetry/agent/version"
         download_url = f"{base_url}/api/telemetry/agent/download"
         
-        resp = requests.get(version_url, timeout=4)
+        resp = requests.get(version_url, headers={"Bypass-Tunnel-Reminder": "true"}, timeout=4)
         if resp.status_code == 200:
             server_version = resp.json().get("version", "1.0")
             if server_version != AGENT_VERSION:
                 print(f"[*] Update available: Server version {server_version} | Local: {AGENT_VERSION}")
                 print("[*] Downloading and applying update...")
-                down_resp = requests.get(download_url, timeout=10)
+                down_resp = requests.get(download_url, headers={"Bypass-Tunnel-Reminder": "true"}, timeout=10)
                 if down_resp.status_code == 200 and down_resp.text:
                     current_file = os.path.abspath(__file__)
                     with open(current_file, "w", encoding="utf-8") as f:
@@ -355,7 +512,7 @@ def collect_data():
     data = {
         "device_id":   DEVICE_ID,
         "device_name": DEVICE_NAME,
-        "os":          f"{platform.system()} {platform.version()}",
+        "os":          get_friendly_os_name(),
         "ip":          socket.gethostbyname(socket.gethostname()),
         "cpu":         cpu,
         "ram":         ram,
@@ -375,6 +532,8 @@ def collect_data():
         "longitude":   lon,
         "location":    geo_loc,
         "serial_number": get_system_serial(),
+        "brand":         get_system_brand(),
+        "model":         get_system_model(),
     }
     return data
 
@@ -388,7 +547,7 @@ def poll_and_execute_command():
         base_url = SERVER_URL.replace("/device-data", "")
         serial = get_system_serial()
         url = f"{base_url}/device-command?device_id={DEVICE_ID}&serial_number={serial}"
-        resp = requests.get(url, timeout=5)
+        resp = requests.get(url, headers={"Bypass-Tunnel-Reminder": "true"}, timeout=5)
         if resp.status_code != 200:
             return
         payload = resp.json()
@@ -433,8 +592,72 @@ def poll_and_execute_command():
         print(f"[CMD] Poll error: {e}")
 
 
+# ─── Local Subnet Auto-Discovery ────────────────────────────────────────────────
+def scan_ip(ip, port, found_ips):
+    """
+    Checks if a specific IP has Port 5000 open and responds to the SecureAssets version endpoint.
+    Used for local network server discovery during viva presentations.
+    """
+    try:
+        # Create a raw TCP socket to check if port is listening
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.1) # Fast 100ms timeout to scan rapidly
+            res = s.connect_ex((ip, port))
+            if res == 0:
+                # Port is open. Confirm it is the SecureAssets Express Server by calling version route
+                url = f"http://{ip}:{port}/api/telemetry/agent/version"
+                resp = requests.get(url, timeout=0.5)
+                if resp.status_code == 200:
+                    found_ips.append(ip) # Match found!
+    except Exception:
+        pass
+
+def discover_server_ip():
+    """
+    Scans the local subnet (e.g. 192.168.1.X) on Port 5000 to automatically locate
+    and connect to the server when its IP changes dynamically.
+    """
+    print("[*] Server connection lost. Running local network auto-discovery...")
+    local_ip = None
+    try:
+        # 1. Try finding local interface IP by opening a UDP connection to external DNS
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        pass
+
+    # 2. Offline Fallback: If no internet, resolve local hostname to get private network IP
+    if not local_ip:
+        try:
+            local_ip = socket.gethostbyname(socket.gethostname())
+        except Exception:
+            return None
+
+    # Derive subnet mask (e.g., convert '192.168.1.45' into '192.168.1')
+    parts = local_ip.split('.')
+    if len(parts) != 4:
+        return None
+    subnet = f"{parts[0]}.{parts[1]}.{parts[2]}"
+
+    # 3. Threaded Subnet Scan: Scan all 254 host addresses on the subnet concurrently
+    found_ips = []
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=50) as executor:
+        for i in range(1, 255):
+            target_ip = f"{subnet}.{i}"
+            executor.submit(scan_ip, target_ip, 5000, found_ips)
+
+    # Return the first server IP found
+    if found_ips:
+        return found_ips[0]
+    return None
+
+
 # ─── Main Loop ─────────────────────────────────────────────────────────────────
 def main():
+    global SERVER_URL
     print(f"""
 ╔══════════════════════════════════════════╗
 ║   SecureAssets Device Agent v1.0         ║
@@ -456,7 +679,7 @@ def main():
                 check_for_updates()
 
             data = collect_data()
-            resp = requests.post(SERVER_URL, json=data, timeout=10)
+            resp = requests.post(SERVER_URL, json=data, headers={"Bypass-Tunnel-Reminder": "true"}, timeout=10)
 
             if resp.status_code == 200:
                 result = resp.json()
@@ -476,6 +699,14 @@ def main():
             consecutive_failures += 1
             print(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Cannot connect to server "
                   f"(attempt {consecutive_failures}) — retrying in {INTERVAL_SEC}s...")
+            
+            # If failed twice, try to auto-discover server on the local subnet
+            if consecutive_failures >= 2:
+                discovered_ip = discover_server_ip()
+                if discovered_ip:
+                    SERVER_URL = f"http://{discovered_ip}:5000/device-data"
+                    print(f"[+] Re-routed dynamically to discovered server: {SERVER_URL}")
+                    consecutive_failures = 0
 
         except Exception as e:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error: {e}")

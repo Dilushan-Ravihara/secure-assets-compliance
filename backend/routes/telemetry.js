@@ -834,6 +834,86 @@ router.get("/export", authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Failed to export telemetry data' });
   }
 });
+
+// Generate and serve a one-liner PowerShell setup script for endpoint devices
+router.get("/agent/install", (req, res) => {
+  try {
+    const protocol  = req.headers["x-forwarded-proto"] || "http";
+    const hostHeader = req.get("host") || "localhost:5000";
+    const serverUrl = `${protocol}://${hostHeader}`;
+
+    // PowerShell script to deploy EDR agent on client Windows machine
+    const psScript = `# SecureAssets EDR Agent - Automated Deployment Script
+# Run this script as Administrator to install the agent as a background SYSTEM service.
+
+$serverUrl = "${serverUrl}"
+$installDir = "C:\\Program Files\\SecureAssetsAgent"
+$exePath = "$installDir\\SecureAssetsAgent.exe"
+$taskName = "SecureAssetsAgent"
+
+Write-Host "[*] Starting SecureAssets EDR Agent Automated Installer..." -ForegroundColor Cyan
+
+# 1. Check Administrator rights
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+    Write-Error "[-] This script must be run as Administrator! Open PowerShell as Admin and try again."
+    Exit
+}
+
+# 2. Create installation directory
+if (!(Test-Path $installDir)) {
+    New-Item -ItemType Directory -Path $installDir -Force | Out-Null
+    Write-Host "[+] Created installation directory: $installDir" -ForegroundColor Green
+}
+
+# 3. Terminate running instances and clean previous Scheduled Task
+if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
+    Write-Host "[*] Removing existing scheduled task for clean install..."
+    Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+}
+
+# Stop any lingering process
+Stop-Process -Name "SecureAssetsAgent" -Force -ErrorAction SilentlyContinue
+
+# 4. Download EDR Agent executable
+Write-Host "[*] Downloading standalone EDR Agent executable..."
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Invoke-WebRequest -Uri "$serverUrl/api/telemetry/agent/download" -OutFile $exePath -UseBasicParsing
+    Write-Host "[+] Download complete: $exePath" -ForegroundColor Green
+} catch {
+    Write-Error "[-] Download failed! Ensure the backend server is reachable at $serverUrl: $_"
+    Exit
+}
+
+# 5. Create Scheduled Task to run as SYSTEM on startup (silent background execution)
+Write-Host "[*] Registering Scheduled Task as SYSTEM..."
+$action = New-ScheduledTaskAction -Execute $exePath -WorkingDirectory $installDir
+$trigger = New-ScheduledTaskTrigger -AtStartup
+$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+$task = New-ScheduledTask -Action $action -Trigger $trigger -Principal $principal -Settings $settings
+
+Register-ScheduledTask -TaskName $taskName -InputObject $task -Force | Out-Null
+
+# 6. Start EDR Agent execution
+Write-Host "[*] Launching the EDR Agent service..."
+Start-ScheduledTask -TaskName $taskName
+
+Write-Host "[SUCCESS] SecureAssets EDR Agent has been successfully configured and started!" -ForegroundColor Green
+Write-Host "[*] Check the dashboard to confirm the device is now reporting telemetry." -ForegroundColor Green
+`;
+
+    res.setHeader("Content-Type", "text/plain");
+    res.setHeader("Content-Disposition", "attachment; filename=install.ps1");
+    res.send(psScript);
+  } catch (err) {
+    console.error("Install script generation error:", err.message);
+    res.status(500).json({ error: "Failed to generate installation script" });
+  }
+});
+
 module.exports = router;
 
 

@@ -139,16 +139,68 @@ app.post("/device-data", async (req, res) => {
     const data      = req.body;
     if (!data || !data.device_id) return res.status(400).json({ error: "device_id required" });
 
-    // Look up registered asset by serial number
+    let assetFound = false;
+
+    // 1. Look up registered asset by serial number
     if (data.serial_number) {
       try {
         const assetRes = await query("SELECT asset_id FROM assets WHERE serial_number = $1 LIMIT 1", [data.serial_number]);
         if (assetRes.rows.length > 0) {
           data.device_id = assetRes.rows[0].asset_id;
           data.registered_asset_id = assetRes.rows[0].asset_id;
+          assetFound = true;
         }
       } catch (err) {
         console.error("Asset lookup by serial number failed:", err.message);
+      }
+    }
+
+    // 2. If not found by serial, check by asset_id (device_id)
+    if (!assetFound) {
+      try {
+        const assetResId = await query("SELECT asset_id FROM assets WHERE asset_id = $1 LIMIT 1", [data.device_id]);
+        if (assetResId.rows.length > 0) {
+          data.registered_asset_id = assetResId.rows[0].asset_id;
+          assetFound = true;
+        }
+      } catch (err) {
+        console.error("Asset lookup by asset_id failed:", err.message);
+      }
+    }
+
+    // 3. If still not found, automatically register this EDR client as an active asset
+    if (!assetFound) {
+      try {
+        const brand = data.brand || (data.os && data.os.toLowerCase().includes("windows") ? "Microsoft" : "Unknown Brand");
+        const model = data.model || "Generic EDR Client PC";
+        const category = data.os && data.os.toLowerCase().includes("server") ? "server" : "desktop";
+        // Generate unique serial if EDR agent did not supply one
+        const serial = data.serial_number || `SN-${data.device_id}-${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
+        const location = data.location || "Main Office";
+        
+        await query(`
+          INSERT INTO assets (asset_id, serial_number, brand, model, category, status, condition, location, notes)
+          VALUES ($1, $2, $3, $4, $5, 'in_use', 'good', $6, 'Auto-registered via active EDR Agent telemetry')
+          ON CONFLICT (asset_id) DO NOTHING
+        `, [data.device_id, serial, brand, model, category, location]);
+
+        console.log(`[Auto-Register] Registered new asset automatically: ${data.device_id} (${serial}) with Brand: ${brand}, Model: ${model}`);
+        data.registered_asset_id = data.device_id;
+      } catch (err) {
+        console.error("Auto-registration of EDR asset failed:", err.message);
+      }
+    } else {
+      // If asset is found, dynamically update its brand and model if they are missing/empty
+      try {
+        await query(`
+          UPDATE assets 
+          SET brand = COALESCE(brand, $1), 
+              model = COALESCE(model, $2),
+              updated_at = NOW()
+          WHERE asset_id = $3
+        `, [data.brand || null, data.model || null, data.device_id]);
+      } catch (err) {
+        console.error("Updating asset brand/model details failed:", err.message);
       }
     }
 
@@ -248,6 +300,67 @@ app.post("/device-data", async (req, res) => {
 
 // Mount the historical query endpoint
 app.use("/api/telemetry", telemetryRoutes);
+
+// Endpoint to generate database backups programmatically
+app.post("/api/settings/backup", async (req, res) => {
+  try {
+    const fs = require("fs");
+    const path = require("path");
+
+    // Fetch data from all database tables
+    const users = await query("SELECT id, name, email, role, created_at FROM users;");
+    const employees = await query("SELECT * FROM employees;");
+    const assets = await query("SELECT * FROM assets;");
+    const telemetry = await query("SELECT * FROM device_telemetry ORDER BY recorded_at DESC LIMIT 1000;");
+    const alerts = await query("SELECT * FROM security_alerts;");
+    const maintenance = await query("SELECT * FROM maintenance_logs;");
+    const audits = await query("SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 500;");
+
+    const backupData = {
+      timestamp: new Date().toISOString(),
+      version: "2.0",
+      tables: {
+        users: users.rows,
+        employees: employees.rows,
+        assets: assets.rows,
+        device_telemetry: telemetry.rows,
+        security_alerts: alerts.rows,
+        maintenance_logs: maintenance.rows,
+        audit_logs: audits.rows
+      }
+    };
+
+    // Make sure backup directory exists inside backend
+    const backupDir = path.join(__dirname, "backups");
+    if (!fs.existsSync(backupDir)) {
+      fs.mkdirSync(backupDir, { recursive: true });
+    }
+
+    const filename = `secureassets_backup_${Date.now()}.json`;
+    const filepath = path.join(backupDir, filename);
+    fs.writeFileSync(filepath, JSON.stringify(backupData, null, 2), "utf8");
+
+    console.log(`[Backup] Database backup successfully created: ${filename}`);
+
+    res.json({
+      success: true,
+      message: "Database backup completed successfully.",
+      filename: filename,
+      downloadUrl: `http://localhost:5000/api/settings/backup/download/${filename}`
+    });
+  } catch (err) {
+    console.error("Backup creation failed:", err.message);
+    res.status(500).json({ error: "Failed to generate database backup" });
+  }
+});
+
+// Download endpoint for server backups
+app.get("/api/settings/backup/download/:filename", (req, res) => {
+  const path = require("path");
+  const filename = req.params.filename;
+  const filepath = path.join(__dirname, "backups", filename);
+  res.download(filepath, filename);
+});
 
 // Handle websocket dashboard connections
 io.on("connection", (socket) => {

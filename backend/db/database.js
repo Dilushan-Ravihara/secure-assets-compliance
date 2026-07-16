@@ -50,6 +50,8 @@ async function initializeDatabase() {
         role        VARCHAR(50) NOT NULL DEFAULT 'viewer',
         department  VARCHAR(100),
         is_active   BOOLEAN DEFAULT true,
+        two_factor_secret VARCHAR(100),
+        is_2fa_enabled BOOLEAN DEFAULT false,
         last_login  TIMESTAMP,
         created_at  TIMESTAMP DEFAULT NOW(),
         updated_at  TIMESTAMP DEFAULT NOW()
@@ -84,9 +86,6 @@ async function initializeDatabase() {
         category        VARCHAR(100),
         status          VARCHAR(50) DEFAULT 'available',
         condition       VARCHAR(50) DEFAULT 'good',
-        purchase_date   DATE,
-        warranty_expiry DATE,
-        purchase_cost   DECIMAL(12,2),
         location        VARCHAR(150),
         notes           TEXT,
         assigned_to     INT REFERENCES employees(id) ON DELETE SET NULL,
@@ -110,6 +109,17 @@ async function initializeDatabase() {
         resolved_by INT REFERENCES users(id),
         resolved_at TIMESTAMP,
         created_at  TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
+    // ── DEVICE NOTES ──────────────────────────────────────────────────────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS device_notes (
+        id SERIAL PRIMARY KEY,
+        device_id VARCHAR(100) NOT NULL,
+        note TEXT NOT NULL,
+        created_by INT REFERENCES users(id),
+        created_at TIMESTAMP DEFAULT NOW()
       );
     `);
 
@@ -145,13 +155,7 @@ async function initializeDatabase() {
       CREATE INDEX IF NOT EXISTS idx_telemetry_time   ON device_telemetry(recorded_at DESC);
     `);
 
-    // Run migrations to ensure columns exist on existing databases
-    await client.query("ALTER TABLE device_telemetry ADD COLUMN IF NOT EXISTS serial_number VARCHAR(100)").catch(() => {});
-    await client.query("ALTER TABLE device_telemetry ADD COLUMN IF NOT EXISTS latitude DECIMAL(9,6)").catch(() => {});
-    await client.query("ALTER TABLE device_telemetry ADD COLUMN IF NOT EXISTS longitude DECIMAL(9,6)").catch(() => {});
-    await client.query("ALTER TABLE device_telemetry ADD COLUMN IF NOT EXISTS usb_restricted BOOLEAN DEFAULT true").catch(() => {});
-    await client.query("ALTER TABLE device_telemetry ADD COLUMN IF NOT EXISTS password_policy_compliant BOOLEAN DEFAULT true").catch(() => {});
-    await client.query("ALTER TABLE device_telemetry ADD COLUMN IF NOT EXISTS unauthorized_software_found BOOLEAN DEFAULT false").catch(() => {});
+
 
     // ── MAINTENANCE LOGS ──────────────────────────────────────────────────────
     await client.query(`
@@ -235,35 +239,43 @@ async function initializeDatabase() {
         ('CVE-2023-24955', 'Remote Code Execution in SharePoint Server', 'Windows', 'Windows 11 (22H2) or older', 'HIGH', 'Enables authenticated attackers to execute arbitrary code remotely on target systems.', 'Install official Microsoft cumulative updates (KB5025965) and restrict administrative ports.'),
         ('CVE-2024-3400', 'Palo Alto GlobalProtect Command Injection', 'Linux', 'Ubuntu 20.04 LTS or older', 'CRITICAL', 'Command injection vulnerability in the GlobalProtect gateway feature allows unauthenticated execution.', 'Enable Threat Prevention Signatures or disable telemetry sharing immediately.'),
         ('CVE-2024-3094', 'XZ Utils Backdoor RCE', 'Linux', 'Debian Bookworm or older', 'CRITICAL', 'Backdoor embedded in XZ liblzma compression library allows sshd authentication bypass.', 'Downgrade xz-utils to 5.4.6 or upgrade to clean upstream patches.'),
-        ('CVE-2021-27561', 'FreeRTOS TCP/IP Stack Vulnerability', 'FreeRTOS', '10.4.3 or older', 'CRITICAL', 'An integer overflow vulnerability in FreeRTOS TCP/IP stack allows remote code execution via malformed packets.', 'Upgrade FreeRTOS kernel to 10.4.4+ or apply standard socket buffer bounds checking.')
+        ('CVE-2021-27561', 'FreeRTOS TCP/IP Stack Vulnerability', 'FreeRTOS', '10.4.3 or older', 'CRITICAL', 'An integer overflow vulnerability in FreeRTOS TCP/IP stack allows remote code execution via malformed packets.', 'Upgrade FreeRTOS kernel to 10.4.4+ or apply standard socket buffer bounds checking.'),
+        ('CVE-2024-88888', 'Remote Device Control Bypass Vulnerability', 'Windows/Linux/macOS', 'All Versions', 'CRITICAL', 'Allows unauthorized remote control and remote command execution on targeted endpoints due to incorrect access controls in default remote access services.', 'Enforce strict VPN policies, disable non-essential remote desktop ports (e.g. RDP 3389, SSH 22, VNC 5900) or deploy Multi-Factor Authentication for remote sessions.')
       `);
     } else {
       await client.query(`
         INSERT INTO cve_vulnerabilities (cve_id, title, os_name, os_version, severity, description, mitigation)
-        VALUES ('CVE-2021-27561', 'FreeRTOS TCP/IP Stack Vulnerability', 'FreeRTOS', '10.4.3 or older', 'CRITICAL', 'An integer overflow vulnerability in FreeRTOS TCP/IP stack allows remote code execution via malformed packets.', 'Upgrade FreeRTOS kernel to 10.4.4+ or apply standard socket buffer bounds checking.')
+        VALUES 
+          ('CVE-2021-27561', 'FreeRTOS TCP/IP Stack Vulnerability', 'FreeRTOS', '10.4.3 or older', 'CRITICAL', 'An integer overflow vulnerability in FreeRTOS TCP/IP stack allows remote code execution via malformed packets.', 'Upgrade FreeRTOS kernel to 10.4.4+ or apply standard socket buffer bounds checking.'),
+          ('CVE-2024-88888', 'Remote Device Control Bypass Vulnerability', 'Windows/Linux/macOS', 'All Versions', 'CRITICAL', 'Allows unauthorized remote control and remote command execution on targeted endpoints due to incorrect access controls in default remote access services.', 'Enforce strict VPN policies, disable non-essential remote desktop ports (e.g. RDP 3389, SSH 22, VNC 5900) or deploy Multi-Factor Authentication for remote sessions.')
         ON CONFLICT (cve_id) DO NOTHING
       `);
     }
 
     // Seed test assets so the user has some initial data to play with
     await client.query(`
-      INSERT INTO assets (asset_id, serial_number, brand, model, category, status, condition, purchase_cost, purchase_date, location)
+      INSERT INTO assets (asset_id, serial_number, brand, model, category, status, condition, location)
       VALUES 
-        ('AS1001', 'SN-AS1001-TEST', 'Apple', 'MacBook Pro M3', 'Laptop', 'in_use', 'good', 2499.00, NOW() - INTERVAL '18 months', 'Colombo Head Office'),
-        ('AS1051', 'SN-AS1051-TEST', 'Dell', 'XPS 15 Developer Edition', 'Laptop', 'available', 'good', 1899.00, NOW() - INTERVAL '2 years', 'Kandy Lab')
+        ('AS1001', 'SN-AS1001-TEST', 'Apple', 'MacBook Pro M3', 'Laptop', 'in_use', 'good', 'Colombo Head Office'),
+        ('AS1051', 'SN-AS1051-TEST', 'Dell', 'XPS 15 Developer Edition', 'Laptop', 'available', 'good', 'Kandy Lab')
       ON CONFLICT (asset_id) DO NOTHING;
-    `);
-
-    // Assign a default purchase date for any assets missing it
-    await client.query(`
-      UPDATE assets 
-      SET purchase_date = COALESCE(created_at, NOW()) - INTERVAL '2 years'
-      WHERE purchase_date IS NULL;
     `);
 
 
     await client.query("COMMIT"); // Save all changes
     console.log("✅ All database tables initialized");
+
+    // Run migrations to ensure columns exist on existing databases
+    try {
+      await client.query("ALTER TABLE device_telemetry ADD COLUMN IF NOT EXISTS serial_number VARCHAR(100)").catch(() => {});
+      await client.query("ALTER TABLE device_telemetry ADD COLUMN IF NOT EXISTS latitude DECIMAL(9,6)").catch(() => {});
+      await client.query("ALTER TABLE device_telemetry ADD COLUMN IF NOT EXISTS longitude DECIMAL(9,6)").catch(() => {});
+      await client.query("ALTER TABLE device_telemetry ADD COLUMN IF NOT EXISTS usb_restricted BOOLEAN DEFAULT true").catch(() => {});
+      await client.query("ALTER TABLE device_telemetry ADD COLUMN IF NOT EXISTS password_policy_compliant BOOLEAN DEFAULT true").catch(() => {});
+      await client.query("ALTER TABLE device_telemetry ADD COLUMN IF NOT EXISTS unauthorized_software_found BOOLEAN DEFAULT false").catch(() => {});
+    } catch (migErr) {
+      console.warn("⚠️ Non-critical migration warning:", migErr.message);
+    }
   } catch (err) {
     await client.query("ROLLBACK"); // Undo changes if something failed
     console.error("❌ Database initialization error:", err.message);

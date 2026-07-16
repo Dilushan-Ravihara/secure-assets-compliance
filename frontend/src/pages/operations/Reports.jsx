@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { FiFileText, FiDownloadCloud, FiDatabase, FiLock, FiCheckCircle, FiInfo, FiCpu, FiXCircle } from 'react-icons/fi';
+import { FiFileText, FiDownloadCloud, FiDatabase, FiLock, FiCheckCircle, FiInfo, FiCpu, FiXCircle, FiPrinter } from 'react-icons/fi';
 import axios from 'axios';
+import { jsPDF } from 'jspdf';
 
 const REPORT_TYPES = [
   {
@@ -61,8 +62,141 @@ const Reports = () => {
     setTimeout(() => setShowToast(false), 4000);
   };
 
+  const handleExportPDF = async (reportId) => {
+    setIsExporting(true);
+    try {
+      const report = REPORT_TYPES.find(r => r.id === reportId);
+      const token = localStorage.getItem('token');
+      const config = {
+        headers: { Authorization: `Bearer ${token}` }
+      };
+      
+      const url = `http://localhost:5000${report.endpoint}?format=json`;
+      const response = await axios.get(url, config);
+      const data = response.data;
+
+      const doc = new jsPDF();
+      
+      // Cyberpunk style PDF header
+      doc.setFillColor(10, 22, 38);
+      doc.rect(0, 0, 210, 40, 'F');
+      
+      doc.setTextColor(0, 240, 255);
+      doc.setFont("courier", "bold");
+      doc.setFontSize(20);
+      doc.text("SECUREASSETS ENTERPRISE", 15, 20);
+      
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(10);
+      doc.setFont("courier", "normal");
+      doc.text(`SYSTEM DATA EXTRACTION: ${report.label.toUpperCase()}`, 15, 30);
+      doc.text(`GENERATED: ${new Date().toLocaleString()}`, 130, 30);
+
+      let y = 50;
+      doc.setTextColor(15, 23, 42);
+      doc.setFont("courier", "bold");
+      doc.setFontSize(9);
+      
+      doc.setFillColor(0, 240, 255);
+      doc.rect(10, y, 190, 8, 'F');
+      
+      let headers = [];
+      let keys = [];
+      let widths = [];
+
+      if (reportId === 'inventory') {
+        headers = ['Asset ID', 'Device Details', 'Category', 'Status', 'Location'];
+        keys = ['asset_id', 'brand', 'category', 'status', 'location'];
+        widths = [35, 55, 35, 30, 35];
+      } else if (reportId === 'security') {
+        headers = ['Alert ID', 'Type', 'Severity', 'Status', 'Description'];
+        keys = ['alert_id', 'type', 'severity', 'status', 'description'];
+        widths = [35, 45, 25, 25, 60];
+      } else if (reportId === 'maintenance') {
+        headers = ['Ticket ID', 'Asset ID', 'Issue', 'Cost', 'Status'];
+        keys = ['ticket_id', 'asset_code', 'issue_description', 'cost', 'status'];
+        widths = [35, 35, 65, 25, 30];
+      } else {
+        headers = ['Device ID', 'OS', 'CPU %', 'RAM %', 'Disk %', 'Status'];
+        keys = ['device_id', 'os', 'cpu', 'ram', 'disk', 'status'];
+        widths = [45, 50, 25, 25, 25, 20];
+      }
+
+      let x = 12;
+      headers.forEach((h, i) => {
+        doc.text(h, x, y + 6);
+        x += widths[i];
+      });
+      
+      y += 12;
+      doc.setFont("courier", "normal");
+      doc.setTextColor(30, 41, 59);
+
+      data.forEach((row, rowIndex) => {
+        if (y > 275) {
+          doc.addPage();
+          y = 20;
+          doc.setFillColor(0, 240, 255);
+          doc.rect(10, y, 190, 8, 'F');
+          doc.setTextColor(15, 23, 42);
+          doc.setFont("courier", "bold");
+          let px = 12;
+          headers.forEach((h, i) => {
+            doc.text(h, px, y + 6);
+            px += widths[i];
+          });
+          y += 12;
+          doc.setFont("courier", "normal");
+          doc.setTextColor(30, 41, 59);
+        }
+
+        if (rowIndex % 2 === 0) {
+          doc.setFillColor(241, 245, 249);
+          doc.rect(10, y - 4, 190, 7, 'F');
+        }
+
+        let rx = 12;
+        keys.forEach((k, i) => {
+          let val = '';
+          if (k === 'brand') {
+            val = `${row.brand || ''} ${row.model || ''}`;
+          } else if (k === 'cost') {
+            val = row.cost ? `${parseFloat(row.cost).toFixed(2)}` : '$0.00';
+          } else if (k === 'cpu' || k === 'ram' || k === 'disk') {
+            val = row[k] ? `${parseFloat(row[k]).toFixed(1)}%` : '0%';
+          } else {
+            val = String(row[k] || '');
+          }
+
+          const maxChars = Math.floor(widths[i] * 0.45);
+          if (val.length > maxChars) {
+            val = val.substring(0, maxChars - 3) + '...';
+          }
+          
+          doc.text(val, rx, y);
+          rx += widths[i];
+        });
+
+        y += 7;
+      });
+
+      doc.save(`${report.filename}.pdf`);
+      showNotif(`${report.label} PDF downloaded successfully!`, 'success');
+      setStep(1);
+    } catch (err) {
+      console.error('PDF export error:', err);
+      showNotif('Failed to generate PDF.', 'error');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   // Pull real data from backend and download it
   const handleExport = async () => {
+    if (selectedFormat === 'pdf') {
+      await handleExportPDF(selectedType);
+      return;
+    }
     setIsExporting(true);
     try {
       const token = localStorage.getItem('token');
@@ -113,7 +247,7 @@ const Reports = () => {
       )}
 
       <div className="w-full max-w-4xl">
-        <div className="text-center mb-10">
+        <div className="text-center mb-10 flex flex-col items-center">
           <h1 className="text-3xl font-bold text-white mb-2 tracking-wide font-mono flex items-center justify-center gap-3">
             <FiDownloadCloud className="text-primary" /> DATA <span className="text-primary">EXTRACTION</span>
           </h1>
@@ -180,6 +314,7 @@ const Reports = () => {
               <div className="flex gap-4 flex-wrap mb-8">
                 {[
                   { fmt: 'csv', label: 'CSV Spreadsheet', desc: 'Open in Excel, Google Sheets, or any spreadsheet app', icon: '📊' },
+                  { fmt: 'pdf', label: 'PDF Document', desc: 'Secure, formatted document ready for printing or compliance review', icon: '📄' },
                   { fmt: 'json', label: 'JSON Data', desc: 'Raw structured data for developers or API integration', icon: '{ }' },
                 ].map(f => (
                   <button

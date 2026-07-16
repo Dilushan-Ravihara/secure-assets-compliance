@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import axios from 'axios';
-import { FiSettings, FiSliders, FiDatabase, FiBell, FiShield, FiCheckCircle, FiCloud, FiSave, FiMonitor, FiDownload, FiCopy, FiTerminal, FiAlertOctagon } from 'react-icons/fi';
+import { FiSettings, FiSliders, FiDatabase, FiBell, FiShield, FiCheckCircle, FiCloud, FiSave, FiMonitor, FiDownload, FiCopy, FiTerminal, FiAlertOctagon, FiKey, FiLock } from 'react-icons/fi';
 
 const AGENT_VERSION = '1.0.0';
 
@@ -10,6 +10,13 @@ const SystemSettings = () => {
   const [showToast, setShowToast] = useState(false);
   const [toastMsg, setToastMsg] = useState('');
   const [copiedCmd, setCopiedCmd] = useState('');
+
+  // 2FA Setup States
+  const [show2FA, setShow2FA] = useState(false);
+  const [qrCodeData, setQrCodeData] = useState(null);
+  const [twoFactorSecret, setTwoFactorSecret] = useState(null);
+  const [verifyCode, setVerifyCode] = useState('');
+  const [is2FAEnabledForUser, setIs2FAEnabledForUser] = useState(false);
 
   // Extract current user and role check
   const currentUser = (() => {
@@ -63,41 +70,170 @@ const SystemSettings = () => {
     }
   };
 
-  // Form states to make it feel interactive
-  const [settings, setSettings] = useState({
-    autoSync: true,
-    strictMode: false,
-    enforce2fa: true,
-    smsAlerts: true,
-    emailReport: true,
-    adminEmails: "dilushan@company.com, soc@company.com"
+  // Form states to make it feel interactive & persistent
+  const [settings, setSettings] = useState(() => {
+    const saved = localStorage.getItem('system_settings');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error("Error loading system settings:", e);
+      }
+    }
+    return {
+      systemName: "SecureAssets Enterprise",
+      timezone: "Asia/Colombo (GMT+5:30)",
+      autoSync: true,
+      strictMode: false,
+      enforce2fa: true,
+      passwordPolicy: "Every 90 Days",
+      smsAlerts: true,
+      emailReport: true,
+      adminEmails: "dilushan@company.com, soc@company.com",
+      backupFrequency: "Daily at 02:00 AM",
+      cloudProvider: "AWS S3 (Encrypted)",
+      smtpHost: "",
+      smtpPort: 587,
+      smtpUser: "",
+      smtpPass: "",
+      smtpFrom: "alerts@secureassets.local"
+    };
   });
+
+  // Fetch settings from backend on mount
+  useState(() => {
+    const fetchSettings = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const config = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
+        const res = await axios.get('http://localhost:5000/api/settings', config);
+        if (res.data.success && Object.keys(res.data.data).length > 0) {
+          setSettings(res.data.data);
+          localStorage.setItem('system_settings', JSON.stringify(res.data.data));
+        }
+      } catch (err) {
+        console.error('Failed to load backend settings', err);
+      }
+    };
+    fetchSettings();
+    
+    // Check if user has 2FA enabled
+    const fetchUserMe = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        if (token) {
+          const res = await axios.get('http://localhost:5000/api/auth/me', { headers: { Authorization: `Bearer ${token}` } });
+          // Note: The backend doesn't return is_2fa_enabled in /me yet, but we can assume they can set it up if it's not checked
+        }
+      } catch (err) {}
+    };
+    fetchUserMe();
+  }, []);
 
   // Flip boolean switches in the configurations settings
   const handleToggle = (key) => {
     setSettings(prev => ({ ...prev, [key]: !prev[key] }));
   };
 
-  // Save configurations to backend
-  const handleSave = () => {
+  // Save configurations to local storage & backend
+  const handleSave = async () => {
     setIsSaving(true);
-    setTimeout(() => {
-      setIsSaving(false);
+    try {
+      localStorage.setItem('system_settings', JSON.stringify(settings));
+      
+      const token = localStorage.getItem('token');
+      const config = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
+      await axios.post('http://localhost:5000/api/settings', settings, config);
+      
       setToastMsg('System configuration saved successfully.');
       setShowToast(true);
       setTimeout(() => setShowToast(false), 3000);
-    }, 800);
+    } catch (err) {
+      console.error(err);
+      setToastMsg('Failed to save settings to server.');
+      setShowToast(true);
+      setTimeout(() => setShowToast(false), 4000);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
-  // Force S3 database dump manual sync
-  const handleBackup = () => {
+  const handleGenerate2FA = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const res = await axios.get('http://localhost:5000/api/auth/2fa/generate', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setQrCodeData(res.data.qrCodeUrl);
+      setTwoFactorSecret(res.data.secret);
+      setShow2FA(true);
+    } catch (err) {
+      setToastMsg('❌ Failed to generate 2FA token.');
+      setShowToast(true);
+      setTimeout(() => setShowToast(false), 4000);
+    }
+  };
+
+  const handleEnable2FA = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      await axios.post('http://localhost:5000/api/auth/2fa/enable', {
+        secret: twoFactorSecret,
+        token: verifyCode
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setToastMsg('✓ Two-Factor Authentication enabled successfully.');
+      setShowToast(true);
+      setShow2FA(false);
+      setIs2FAEnabledForUser(true);
+      setTimeout(() => setShowToast(false), 3000);
+    } catch (err) {
+      setToastMsg('❌ Invalid authentication code.');
+      setShowToast(true);
+      setTimeout(() => setShowToast(false), 4000);
+    }
+  };
+
+  // Force programmatically generated database backup download
+  const handleBackup = async () => {
     setIsSaving(true);
-    setTimeout(() => {
-      setIsSaving(false);
-      setToastMsg('Manual backup to AWS S3 completed.');
+    try {
+      const token = localStorage.getItem('token');
+      const config = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
+      
+      const res = await axios.post('http://localhost:5000/api/settings/backup', {}, config);
+      
+      if (res.data && res.data.downloadUrl) {
+        // Trigger file download in browser
+        const link = document.createElement('a');
+        link.href = res.data.downloadUrl;
+        link.setAttribute('download', res.data.filename);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        
+        // Update last backup timestamp
+        setSettings(prev => {
+          const next = { ...prev, lastBackupTime: new Date().toLocaleTimeString() };
+          localStorage.setItem('system_settings', JSON.stringify(next));
+          return next;
+        });
+        
+        setToastMsg(`✓ Database backup completed successfully.`);
+      } else {
+        setToastMsg('❌ Backup response did not return a valid download link.');
+      }
       setShowToast(true);
       setTimeout(() => setShowToast(false), 3000);
-    }, 1500);
+    } catch (err) {
+      console.error(err);
+      setToastMsg('❌ Failed to trigger database backup: ' + (err.response?.data?.error || err.message));
+      setShowToast(true);
+      setTimeout(() => setShowToast(false), 4000);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const copyCmd = (cmd, key) => {
@@ -176,13 +312,22 @@ const SystemSettings = () => {
               <div className="space-y-6">
                 <div>
                   <label className="cyber-label">System Name</label>
-                  <input type="text" className="cyber-input w-full max-w-md text-white" defaultValue="SecureAssets Enterprise" />
+                  <input 
+                    type="text" 
+                    className="cyber-input w-full max-w-md text-white" 
+                    value={settings.systemName} 
+                    onChange={(e) => setSettings({ ...settings, systemName: e.target.value })} 
+                  />
                 </div>
                 <div>
                   <label className="cyber-label">Default Timezone</label>
-                  <select className="cyber-input w-full max-w-md text-white">
-                    <option>Asia/Colombo (GMT+5:30)</option>
-                    <option>UTC (GMT+0:00)</option>
+                  <select 
+                    className="cyber-input w-full max-w-md text-white"
+                    value={settings.timezone}
+                    onChange={(e) => setSettings({ ...settings, timezone: e.target.value })}
+                  >
+                    <option value="Asia/Colombo (GMT+5:30)">Asia/Colombo (GMT+5:30)</option>
+                    <option value="UTC (GMT+0:00)">UTC (GMT+0:00)</option>
                   </select>
                 </div>
                 <div className="pt-4 border-t border-slate-800">
@@ -231,11 +376,73 @@ const SystemSettings = () => {
                 </div>
                 <div>
                   <label className="cyber-label">Password Rotation Policy</label>
-                  <select className="cyber-input w-full max-w-md text-white">
-                    <option>Every 30 Days</option>
-                    <option selected>Every 90 Days</option>
-                    <option>Never</option>
+                  <select 
+                    className="cyber-input w-full max-w-md text-white"
+                    value={settings.passwordPolicy}
+                    onChange={(e) => setSettings({ ...settings, passwordPolicy: e.target.value })}
+                  >
+                    <option value="Every 30 Days">Every 30 Days</option>
+                    <option value="Every 90 Days">Every 90 Days</option>
+                    <option value="Never">Never</option>
                   </select>
+                </div>
+                
+                <h4 className="text-white font-bold mt-8 mb-4 uppercase tracking-wider text-xs border-b border-slate-700/50 pb-2">
+                  My Security Settings
+                </h4>
+                <div className="bg-slate-800/50 border border-slate-700 p-5 rounded-lg max-w-md">
+                  <div className="flex items-center gap-3 mb-3">
+                    <div className={`p-2 rounded ${is2FAEnabledForUser ? 'bg-success/20 text-success' : 'bg-warning/20 text-warning'}`}>
+                      <FiLock className="text-xl" />
+                    </div>
+                    <div>
+                      <h4 className="text-white font-bold text-sm">Two-Factor Authentication</h4>
+                      <p className="text-xs text-slate-400">Add an extra layer of security to your account</p>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={handleGenerate2FA} 
+                    className="btn-primary w-full mt-2 py-2 text-sm flex items-center justify-center gap-2"
+                  >
+                    <FiKey /> SET UP 2FA APP
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 2FA Setup Modal Overlay */}
+          {show2FA && (
+            <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-[fadeIn_0.2s_ease-out]">
+              <div className="w-full max-w-md bg-darkCard border border-primary/30 rounded-2xl p-6 shadow-[0_0_50px_rgba(0,240,255,0.15)] relative">
+                <h3 className="text-xl font-bold text-white mb-4 text-center font-mono">Configure Authenticator App</h3>
+                <p className="text-slate-400 text-sm text-center mb-6">Scan this QR code with Google Authenticator, Authy, or Microsoft Authenticator.</p>
+                
+                {qrCodeData && (
+                  <div className="flex justify-center mb-6 p-4 bg-white rounded-xl mx-auto w-fit">
+                    <img src={qrCodeData} alt="2FA QR Code" className="w-48 h-48" />
+                  </div>
+                )}
+                
+                <div className="mb-6">
+                  <label className="cyber-label text-center block">Enter 6-digit code to verify</label>
+                  <input 
+                    type="text" 
+                    className="cyber-input w-full text-center tracking-[0.5em] text-lg font-mono" 
+                    placeholder="000000"
+                    maxLength={6}
+                    value={verifyCode}
+                    onChange={(e) => setVerifyCode(e.target.value)}
+                  />
+                </div>
+                
+                <div className="flex gap-3">
+                  <button onClick={() => setShow2FA(false)} className="flex-1 py-2 rounded-lg border border-slate-700 text-slate-400 hover:text-white hover:bg-slate-800 transition-colors">
+                    CANCEL
+                  </button>
+                  <button onClick={handleEnable2FA} disabled={verifyCode.length !== 6} className="flex-1 btn-primary py-2 disabled:opacity-50 disabled:cursor-not-allowed">
+                    VERIFY & ENABLE
+                  </button>
                 </div>
               </div>
             </div>
@@ -271,8 +478,35 @@ const SystemSettings = () => {
                   </div>
                 </div>
                 <div>
-                  <label className="cyber-label">Admin Email Addresses</label>
-                  <input type="text" className="cyber-input w-full max-w-md text-white" value={settings.adminEmails} onChange={(e) => setSettings({...settings, adminEmails: e.target.value})} />
+                  <label className="cyber-label">Admin Email Addresses (Comma separated)</label>
+                  <input type="text" className="cyber-input w-full max-w-md text-white" value={settings.adminEmails} onChange={(e) => setSettings({...settings, adminEmails: e.target.value})} placeholder="admin@company.com" />
+                </div>
+                
+                <h4 className="text-white font-bold mt-8 mb-4 uppercase tracking-wider text-xs border-b border-slate-700/50 pb-2">
+                  SMTP Mail Server Configuration
+                </h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-2xl">
+                  <div>
+                    <label className="cyber-label">SMTP Host</label>
+                    <input type="text" className="cyber-input w-full text-white" value={settings.smtpHost || ''} onChange={(e) => setSettings({...settings, smtpHost: e.target.value})} placeholder="smtp.gmail.com" />
+                  </div>
+                  <div>
+                    <label className="cyber-label">SMTP Port</label>
+                    <input type="number" className="cyber-input w-full text-white" value={settings.smtpPort || ''} onChange={(e) => setSettings({...settings, smtpPort: e.target.value})} placeholder="587" />
+                  </div>
+                  <div>
+                    <label className="cyber-label">SMTP Username</label>
+                    <input type="text" className="cyber-input w-full text-white" value={settings.smtpUser || ''} onChange={(e) => setSettings({...settings, smtpUser: e.target.value})} placeholder="alerts@company.com" />
+                  </div>
+                  <div>
+                    <label className="cyber-label">SMTP Password</label>
+                    <input type="password" className="cyber-input w-full text-white" value={settings.smtpPass || ''} onChange={(e) => setSettings({...settings, smtpPass: e.target.value})} placeholder="••••••••" />
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="cyber-label">Sender Address (From)</label>
+                    <input type="email" className="cyber-input w-full text-white" value={settings.smtpFrom || ''} onChange={(e) => setSettings({...settings, smtpFrom: e.target.value})} placeholder="alerts@secureassets.local" />
+                    <p className="text-[10px] text-slate-500 mt-1 font-mono">If left empty, a mock Ethereal test account will be automatically generated to preview emails.</p>
+                  </div>
                 </div>
               </div>
             </div>
@@ -289,7 +523,7 @@ const SystemSettings = () => {
                   <FiCloud className="text-3xl text-success" />
                   <div>
                     <div className="text-white font-bold text-sm">Cloud Vault Connected</div>
-                    <div className="text-xs text-slate-400 font-mono">Last Sync: Just now</div>
+                    <div className="text-xs text-slate-400 font-mono">Last Sync: {settings.lastBackupTime ? settings.lastBackupTime : 'Just now'}</div>
                   </div>
                 </div>
                 <FiCheckCircle className="text-success text-xl" />
@@ -298,18 +532,26 @@ const SystemSettings = () => {
               <div className="space-y-6">
                 <div>
                   <label className="cyber-label">Automated Backup Frequency</label>
-                  <select className="cyber-input w-full max-w-md text-white">
-                    <option>Hourly</option>
-                    <option selected>Daily at 02:00 AM</option>
-                    <option>Weekly on Sundays</option>
+                  <select 
+                    className="cyber-input w-full max-w-md text-white"
+                    value={settings.backupFrequency}
+                    onChange={(e) => setSettings({ ...settings, backupFrequency: e.target.value })}
+                  >
+                    <option value="Hourly">Hourly</option>
+                    <option value="Daily at 02:00 AM">Daily at 02:00 AM</option>
+                    <option value="Weekly on Sundays">Weekly on Sundays</option>
                   </select>
                 </div>
                 <div>
                   <label className="cyber-label">Cloud Storage Provider</label>
-                  <select className="cyber-input w-full max-w-md text-white">
-                    <option selected>AWS S3 (Encrypted)</option>
-                    <option>Azure Blob Storage</option>
-                    <option>Google Cloud Storage</option>
+                  <select 
+                    className="cyber-input w-full max-w-md text-white"
+                    value={settings.cloudProvider}
+                    onChange={(e) => setSettings({ ...settings, cloudProvider: e.target.value })}
+                  >
+                    <option value="AWS S3 (Encrypted)">AWS S3 (Encrypted)</option>
+                    <option value="Azure Blob Storage">Azure Blob Storage</option>
+                    <option value="Google Cloud Storage">Google Cloud Storage</option>
                   </select>
                 </div>
                 <div className="pt-4 mt-6 border-t border-slate-800">
@@ -354,9 +596,32 @@ const SystemSettings = () => {
                   </a>
                 </div>
               </div>
+              {/* One-Click automated deployment */}
+              <div className="p-5 bg-primary/5 border border-primary/20 rounded-xl mb-8">
+                <h4 className="text-primary font-bold text-sm uppercase tracking-wider mb-2 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-primary animate-ping"></span>
+                  One-Click Automated Deployment (Recommended for 50+ Devices)
+                </h4>
+                <p className="text-slate-400 text-xs mb-4">
+                  Run this single command in PowerShell as **Administrator** on any Windows device. 
+                  It will automatically download, configure, and install the agent as a silent startup service (no Python required).
+                </p>
+                <div className="relative">
+                  <pre className="bg-slate-950 border border-slate-800 rounded-lg p-3.5 pr-12 text-[11px] text-success font-mono overflow-x-auto select-all">
+                    {`powershell -ExecutionPolicy Bypass -Command "iwr -useb http://${window.location.hostname}:5000/api/telemetry/agent/install | iex"`}
+                  </pre>
+                  <button
+                    onClick={() => copyCmd(`powershell -ExecutionPolicy Bypass -Command "iwr -useb http://${window.location.hostname}:5000/api/telemetry/agent/install | iex"`, 'oneclick')}
+                    className="absolute top-3.5 right-3.5 p-1.5 bg-slate-900 hover:bg-slate-800 rounded text-slate-400 hover:text-white transition-colors"
+                    title="Copy command"
+                  >
+                    {copiedCmd === 'oneclick' ? <FiCheckCircle className="text-success text-xs" /> : <FiCopy className="text-xs" />}
+                  </button>
+                </div>
+              </div>
 
               {/* Setup steps */}
-              <h4 className="text-white font-bold text-sm mb-4 uppercase tracking-wider">Installation Guide</h4>
+              <h4 className="text-white font-bold text-sm mb-4 uppercase tracking-wider">Manual Installation Guide (Fallback)</h4>
               <div className="space-y-4">
                 {[
                   {

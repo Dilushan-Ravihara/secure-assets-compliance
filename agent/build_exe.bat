@@ -33,10 +33,10 @@ if %errorLevel% neq 0 (
 
 :: Build the executable
 ::   --onefile     = single standalone .exe
-::   --console     = keep console window so you can see agent output and errors
+::   --noconsole   = run silently in the background (no cmd window to close accidentally)
 ::   --name        = output exe name
 echo [*] Compiling agent.py with PyInstaller...
-%PYTHON_EXE% -m PyInstaller --clean --onefile --console --name="SecureAssetsAgent" agent.py
+%PYTHON_EXE% -m PyInstaller --clean --onefile --noconsole --name="SecureAssetsAgent" agent.py
 
 if %errorLevel% neq 0 (
     echo [ERR] PyInstaller build failed.

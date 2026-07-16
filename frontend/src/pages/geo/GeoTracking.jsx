@@ -19,12 +19,69 @@ const OFFICE_COORDINATES = {
   'hq': { lat: 6.9271, lon: 79.8612 }
 };
 
+// Bug #9 fix: Moved outside the component so they are always defined before any useEffect runs
+const hashCode = (str) => {
+  if (!str) return 0;
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return Math.abs(hash);
+};
+
+const getCoordinates = (asset) => {
+  if (asset.latitude !== undefined && asset.latitude !== null && asset.longitude !== undefined && asset.longitude !== null) {
+    return { lat: parseFloat(asset.latitude), lon: parseFloat(asset.longitude), isLive: true };
+  }
+  const locStr = (asset.location || '').toLowerCase().trim();
+  if (OFFICE_COORDINATES[locStr]) {
+    return { ...OFFICE_COORDINATES[locStr], isLive: false };
+  }
+  const hash = hashCode(asset.asset_id || asset.id?.toString() || '0');
+  const fallbackLat = 6.9271 + ((hash % 100) / 2000) - 0.025;
+  const fallbackLon = 79.8612 + (((hash >> 7) % 100) / 2000) - 0.025;
+  return { lat: fallbackLat, lon: fallbackLon, isLive: false };
+};
+
 const GeoTracking = () => {
   const [assets, setAssets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [hoveredAsset, setHoveredAsset] = useState(null);
   const [selectedAsset, setSelectedAsset] = useState(null);
+  const [packets, setPackets] = useState([]);
+
+  useEffect(() => {
+    if (!selectedAsset) {
+      setPackets([]);
+      return;
+    }
+    
+    // Initial packets
+    setPackets([
+      `[TX] PKT_${Math.floor(Math.random() * 90000) + 10000}: Connecting to orbital link...`,
+      `[TX] PKT_${Math.floor(Math.random() * 90000) + 10000}: Handshake verified with node ${selectedAsset.asset_id}`
+    ]);
+
+    const interval = setInterval(() => {
+      const coords = getCoordinates(selectedAsset);
+      const lat = (coords.lat + (Math.random() - 0.5) * 0.0005).toFixed(6);
+      const lon = (coords.lon + (Math.random() - 0.5) * 0.0005).toFixed(6);
+      const pktId = Math.floor(Math.random() * 90000) + 10000;
+      const statusOptions = ['TELEMETRY_OK', 'LINK_EXCELLENT', 'COORD_SYNCED', 'HEARTBEAT_SENT'];
+      const status = statusOptions[Math.floor(Math.random() * statusOptions.length)];
+      
+      const newPacket = `[TX] PKT_${pktId}: Lat=${lat} Lon=${lon} (${status})`;
+      
+      setPackets(prev => {
+        const next = [...prev, newPacket];
+        if (next.length > 3) next.shift(); // keep last 3
+        return next;
+      });
+    }, 2500);
+
+    return () => clearInterval(interval);
+  }, [selectedAsset]);
 
   // Retrieve assets and telemetry list from API
   const fetchLocations = async () => {
@@ -184,32 +241,7 @@ const GeoTracking = () => {
 
   const topLocations = Object.entries(locations).sort((a, b) => b[1] - a[1]).slice(0, 5);
 
-  // Hash code helper for static plotting
-  const hashCode = (str) => {
-    if (!str) return 0;
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      hash = str.charCodeAt(i) + ((hash << 5) - hash);
-    }
-    return Math.abs(hash);
-  };
-
-  // Helper to resolve coordinates
-  const getCoordinates = (asset) => {
-    if (asset.latitude !== undefined && asset.latitude !== null && asset.longitude !== undefined && asset.longitude !== null) {
-      return { lat: parseFloat(asset.latitude), lon: parseFloat(asset.longitude), isLive: true };
-    }
-    // Check standard office catalog
-    const locStr = (asset.location || '').toLowerCase().trim();
-    if (OFFICE_COORDINATES[locStr]) {
-      return { ...OFFICE_COORDINATES[locStr], isLive: false };
-    }
-    // Static coordinate distribution to avoid overlapping
-    const hash = hashCode(asset.asset_id || asset.id.toString());
-    const fallbackLat = 6.9271 + ((hash % 100) / 2000) - 0.025;
-    const fallbackLon = 79.8612 + (((hash >> 7) % 100) / 2000) - 0.025;
-    return { lat: fallbackLat, lon: fallbackLon, isLive: false };
-  };
+  // (hashCode and getCoordinates are defined at module level above — Bug #9 fix)
 
   // Filter assets
   const filteredAssets = assets.filter(asset => {
@@ -450,12 +482,26 @@ const GeoTracking = () => {
                   </span>
                 </div>
 
-                <div className="p-3 bg-slate-900/40 border border-slate-800 rounded-lg flex items-start gap-2.5">
-                  <FiActivity className="text-success mt-0.5 animate-pulse" />
-                  <div>
-                    <span className="text-[9px] text-slate-500 uppercase block">Satellite Status</span>
-                    <span className="text-success text-[10px] uppercase font-bold">Transmitting telemetry packets</span>
+                <div className="p-3 bg-slate-950/60 border border-slate-800 rounded-lg flex flex-col gap-2">
+                  <div className="flex items-start gap-2.5">
+                    <FiActivity className="text-success mt-0.5 animate-pulse" />
+                    <div>
+                      <span className="text-[9px] text-slate-500 uppercase block">Satellite Status</span>
+                      <span className="text-success text-[10px] uppercase font-bold flex items-center gap-1.5">
+                        <span className="inline-block w-1.5 h-1.5 rounded-full bg-success animate-ping"></span>
+                        Transmitting telemetry packets
+                      </span>
+                    </div>
                   </div>
+                  {packets.length > 0 && (
+                    <div className="mt-1.5 pt-2 border-t border-slate-900 font-mono text-[9px] text-primary/80 space-y-1 bg-black/40 p-2 rounded max-h-16 overflow-y-auto leading-tight">
+                      {packets.map((pkt, idx) => (
+                        <div key={idx} className="truncate animate-[fadeIn_0.2s_ease-out]">
+                          {pkt}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

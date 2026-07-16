@@ -52,6 +52,69 @@ router.get("/", async (req, res) => {
   }
 });
 
+// GET /api/assets/:id/timeline - Get asset lifecycle timeline
+router.get("/:id/timeline", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Validate if it's an integer ID or string asset_id
+    let assetIdParam = id;
+    let isNumeric = !isNaN(parseInt(id, 10));
+    
+    // We will build a unified timeline from audit_logs and maintenance
+    // First, find the actual DB id if asset_id string was passed
+    let dbId = id;
+    if (!isNumeric) {
+      const assetRes = await query(`SELECT id FROM assets WHERE asset_id = $1`, [id]);
+      if (assetRes.rows.length === 0) return res.status(404).json({ error: "Asset not found" });
+      dbId = assetRes.rows[0].id;
+    }
+
+    const events = [];
+
+    // 1. Get creation event
+    const creationRes = await query(`
+      SELECT 'Created' as type, 'Asset added to registry' as description, created_at as timestamp 
+      FROM assets WHERE id = $1
+    `, [dbId]);
+    if (creationRes.rows.length > 0) events.push(creationRes.rows[0]);
+
+    // 2. Get maintenance events
+    const maintRes = await query(`
+      SELECT 'Maintenance' as type, 
+             CONCAT('Ticket: ', title, ' - Status: ', status) as description, 
+             created_at as timestamp
+      FROM maintenance_logs WHERE asset_id = $1
+    `, [dbId]);
+    events.push(...maintRes.rows);
+
+    // 3. Get security alerts
+    const secRes = await query(`
+      SELECT 'Security' as type, 
+             CONCAT(severity, ' alert: ', type) as description, 
+             created_at as timestamp
+      FROM security_alerts WHERE asset_id = $1
+    `, [dbId]);
+    events.push(...secRes.rows);
+
+    // 4. Get audit logs for this asset
+    const auditRes = await query(`
+      SELECT 'Audit' as type, action as description, created_at as timestamp 
+      FROM audit_logs 
+      WHERE target_table = 'assets' AND target_id = $1
+    `, [dbId]);
+    events.push(...auditRes.rows);
+
+    // Sort by timestamp descending
+    events.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+    res.json({ success: true, data: events });
+  } catch (err) {
+    console.error("Asset timeline fetch error:", err);
+    res.status(500).json({ error: "Failed to fetch asset timeline" });
+  }
+});
+
 // Get total counts and combined cost of all assets
 router.get("/stats/summary", async (req, res) => {
   try {
@@ -61,8 +124,7 @@ router.get("/stats/summary", async (req, res) => {
         COUNT(*) FILTER (WHERE status = 'in_use')        AS in_use,
         COUNT(*) FILTER (WHERE status = 'available')     AS available,
         COUNT(*) FILTER (WHERE status = 'repair')        AS in_repair,
-        COUNT(*) FILTER (WHERE status = 'retired')       AS retired,
-        SUM(purchase_cost)                               AS total_value
+        COUNT(*) FILTER (WHERE status = 'retired')       AS retired
       FROM assets
     `);
     res.json(stats.rows[0]);
@@ -71,117 +133,7 @@ router.get("/stats/summary", async (req, res) => {
   }
 });
 
-// Calculate future depreciation and replacement budget projection for assets
-router.get("/stats/forecast", async (req, res) => {
-  try {
-    const result = await query(`
-      SELECT id, asset_id, brand, model, category, purchase_cost, COALESCE(purchase_date, created_at, NOW()) AS purchase_date, status, warranty_expiry
-      FROM assets
-      WHERE purchase_cost IS NOT NULL
-    `);
 
-    const assets = result.rows;
-    const currentYear = new Date().getFullYear();
-
-    // 1. Calculate Depreciation for each asset
-    // Lifespans (years) per category: Laptops (4), Servers (7), Network (5), Printers (5), Mobile (3), Other (5)
-    const categoryLifespans = {
-      laptop: 4,
-      server: 7,
-      network: 5,
-      printer: 5,
-      mobile: 3,
-      other: 5
-    };
-
-    const straightLineRate = 0.25; // 25% straight line annually
-    const reducingBalanceRate = 0.30; // 30% reducing balance annually
-
-    const calculated = assets.map(asset => {
-      const cost = parseFloat(asset.purchase_cost);
-      const purchaseYear = new Date(asset.purchase_date).getFullYear();
-      const ageInYears = Math.max(0, currentYear - purchaseYear);
-      const category = (asset.category || 'other').toLowerCase();
-      const lifespan = categoryLifespans[category] || 5;
-
-      // straight-line method (salvage value is 10% of cost)
-      const salvageValue = cost * 0.1;
-      const annualStraightLineDep = (cost - salvageValue) / lifespan;
-      const straightLineCurrentValue = Math.max(salvageValue, cost - (annualStraightLineDep * ageInYears));
-
-      // reducing balance method: value = cost * (1 - rate)^age
-      const reducingBalanceCurrentValue = Math.max(salvageValue, cost * Math.pow(1 - reducingBalanceRate, ageInYears));
-
-      return {
-        id: asset.id,
-        asset_id: asset.asset_id,
-        brand: asset.brand,
-        model: asset.model,
-        category: asset.category,
-        purchase_cost: cost,
-        purchase_date: asset.purchase_date,
-        age_years: ageInYears,
-        lifespan_years: lifespan,
-        straight_line_value: straightLineCurrentValue.toFixed(2),
-        reducing_balance_value: reducingBalanceCurrentValue.toFixed(2),
-        depreciated_amount: (cost - straightLineCurrentValue).toFixed(2),
-        warranty_expired: asset.warranty_expiry ? (new Date(asset.warranty_expiry) < new Date()) : false,
-        requires_replacement: ageInYears >= lifespan || asset.status === 'retired'
-      };
-    });
-
-    // 2. Budget Projections for next 3 Years
-    // Project replacement cost based on category replacements
-    const projections = {
-      year1_budget: 0,
-      year2_budget: 0,
-      year3_budget: 0,
-      year1_count: 0,
-      year2_count: 0,
-      year3_count: 0,
-      items: []
-    };
-
-    calculated.forEach(asset => {
-      const cost = asset.purchase_cost;
-      const purchaseYear = new Date(asset.purchase_date).getFullYear();
-      
-      // Calculate projected replacement year relative to now
-      const replacementYear = purchaseYear + asset.lifespan_years;
-      const yearsUntilReplacement = replacementYear - currentYear;
-
-      if (yearsUntilReplacement <= 1 || asset.requires_replacement) {
-        projections.year1_budget += cost;
-        projections.year1_count += 1;
-        projections.items.push({ ...asset, replace_in: "Year 1 (Immediate)" });
-      } else if (yearsUntilReplacement === 2) {
-        projections.year2_budget += cost;
-        projections.year2_count += 1;
-        projections.items.push({ ...asset, replace_in: "Year 2" });
-      } else if (yearsUntilReplacement === 3) {
-        projections.year3_budget += cost;
-        projections.year3_count += 1;
-        projections.items.push({ ...asset, replace_in: "Year 3" });
-      }
-    });
-
-    res.json({
-      assets: calculated,
-      projections: {
-        year1_budget: projections.year1_budget.toFixed(2),
-        year2_budget: projections.year2_budget.toFixed(2),
-        year3_budget: projections.year3_budget.toFixed(2),
-        year1_count: projections.year1_count,
-        year2_count: projections.year2_count,
-        year3_count: projections.year3_count
-      },
-      replacement_list: projections.items
-    });
-  } catch (err) {
-    console.error("Forecasting stats error:", err.message);
-    res.status(500).json({ error: "Failed to generate financial lifecycle forecast" });
-  }
-});
 
 // Export all assets as CSV or JSON for reporting
 router.get("/export", async (req, res) => {
@@ -190,8 +142,7 @@ router.get("/export", async (req, res) => {
     const result = await query(`
       SELECT 
         a.asset_id, a.serial_number, a.brand, a.model, a.category,
-        a.status, a.condition, a.purchase_cost, a.purchase_date,
-        a.warranty_expiry, a.location, a.notes,
+        a.status, a.condition, a.location, a.notes,
         e.name AS assigned_to, a.created_at
       FROM assets a
       LEFT JOIN employees e ON a.assigned_to = e.id
@@ -205,11 +156,10 @@ router.get("/export", async (req, res) => {
     }
 
     // Build CSV
-    const headers = ['Asset ID','Serial Number','Brand','Model','Category','Status','Condition','Purchase Cost','Purchase Date','Warranty Expiry','Location','Assigned To','Created At'];
+    const headers = ['Asset ID','Serial Number','Brand','Model','Category','Status','Condition','Location','Assigned To','Created At'];
     const rows = result.rows.map(r => [
       r.asset_id, r.serial_number || '', r.brand || '', r.model || '', r.category || '',
-      r.status || '', r.condition || '', r.purchase_cost || '', r.purchase_date ? new Date(r.purchase_date).toLocaleDateString() : '',
-      r.warranty_expiry ? new Date(r.warranty_expiry).toLocaleDateString() : '', r.location || '',
+      r.status || '', r.condition || '', r.location || '',
       r.assigned_to || 'Unassigned', new Date(r.created_at).toLocaleString()
     ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
 
@@ -259,8 +209,7 @@ router.post("/", async (req, res) => {
   try {
     const {
       asset_id, serial_number, brand, model, category, status,
-      condition, purchase_date, warranty_expiry, purchase_cost,
-      location, notes, assigned_to
+      condition, location, notes, assigned_to
     } = req.body;
 
     if (!asset_id || !brand || !model) {
@@ -270,12 +219,11 @@ router.post("/", async (req, res) => {
     const result = await query(`
       INSERT INTO assets
         (asset_id, serial_number, brand, model, category, status, condition,
-         purchase_date, warranty_expiry, purchase_cost, location, notes, assigned_to, created_by)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+         location, notes, assigned_to, created_by)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
       RETURNING *
     `, [asset_id, serial_number, brand, model, category, status || 'available',
-        condition || 'good', purchase_date ?? null, warranty_expiry ?? null,
-        purchase_cost ?? null, location, notes, assigned_to ?? null, req.user.id]);
+        condition || 'good', location, notes, assigned_to ?? null, req.user.id]);
 
     // Audit log
     await query(
@@ -351,27 +299,43 @@ router.post("/", async (req, res) => {
 router.put("/:id", async (req, res) => {
   try {
     const {
-      serial_number, brand, model, category, status, condition,
-      purchase_date, warranty_expiry, purchase_cost, location, notes, assigned_to
+      asset_id, serial_number, brand, model, category, status, condition,
+      location, notes, assigned_to
     } = req.body;
     const rawId = req.params.id;
     const isNumeric = /^\d+$/.test(rawId);
 
+    // Fetch the current asset ID before making updates
+    const currentAssetRes = await query(`
+      SELECT asset_id FROM assets 
+      WHERE (CASE WHEN $1 = true THEN id = $2 ELSE false END)
+         OR UPPER(asset_id) = UPPER($3)
+    `, [isNumeric, isNumeric ? parseInt(rawId, 10) : 0, rawId]);
+
+    if (currentAssetRes.rows.length === 0) {
+      return res.status(404).json({ error: "Asset not found" });
+    }
+    const oldAssetId = currentAssetRes.rows[0].asset_id;
+
+    // If the asset_id is changing, propagate the update to device_telemetry and security_alerts
+    if (asset_id && asset_id !== oldAssetId) {
+      await query("UPDATE device_telemetry SET device_id = $1 WHERE device_id = $2", [asset_id, oldAssetId]);
+      await query("UPDATE security_alerts SET device_id = $1 WHERE device_id = $2", [asset_id, oldAssetId]);
+    }
+
     const result = await query(`
       UPDATE assets SET
-        serial_number=$1, brand=$2, model=$3, category=$4, status=$5, condition=$6,
-        purchase_date=$7, warranty_expiry=$8, purchase_cost=$9, location=$10, notes=$11,
-        assigned_to=$12, updated_at=NOW()
-      WHERE (CASE WHEN $13 = true THEN id = $14 ELSE false END)
-         OR UPPER(asset_id) = UPPER($15)
+        asset_id=$1, serial_number=$2, brand=$3, model=$4, category=$5, status=$6, condition=$7,
+        location=$8, notes=$9, assigned_to=$10, updated_at=NOW()
+      WHERE (CASE WHEN $11 = true THEN id = $12 ELSE false END)
+         OR UPPER(asset_id) = UPPER($13)
       RETURNING *
-    `, [serial_number, brand, model, category, status, condition,
-        purchase_date ?? null, warranty_expiry ?? null, purchase_cost ?? null,
+    `, [asset_id || oldAssetId, serial_number, brand, model, category, status, condition,
         location, notes, assigned_to ?? null, isNumeric, isNumeric ? parseInt(rawId, 10) : 0, rawId]);
 
-    if (result.rows.length === 0) return res.status(404).json({ error: "Asset not found" });
     res.json(result.rows[0]);
   } catch (err) {
+    if (err.code === "23505") return res.status(409).json({ error: "Asset ID or Serial Number already exists" });
     console.error("Update asset error:", err.message);
     res.status(500).json({ error: "Failed to update asset" });
   }

@@ -2,6 +2,7 @@
 const express = require("express");
 const { query } = require("../db/database");
 const { authenticateToken } = require("../middleware/auth");
+const { sendMaintenanceTicketEmail } = require("../services/emailService");
 
 const router = express.Router();
 router.use(authenticateToken);
@@ -43,7 +44,21 @@ router.post("/", async (req, res) => {
       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *
     `, [ticketId, asset_id || null, title, description, priority || 'medium', assigned_to || null, req.user.id]);
 
-    res.status(201).json(result.rows[0]);
+    const ticket = result.rows[0];
+
+    // Automatically sync asset status on creation if a target asset is linked
+    if (ticket.asset_id) {
+      if (ticket.status === 'in_progress') {
+        await query("UPDATE assets SET status = 'repair', updated_at = NOW() WHERE id = $1 AND status != 'retired'", [ticket.asset_id]);
+      } else if (ticket.status === 'completed' || ticket.status === 'pending') {
+        await query("UPDATE assets SET status = 'available', updated_at = NOW() WHERE id = $1 AND status != 'retired'", [ticket.asset_id]);
+      }
+    }
+
+    // Send email alert to admin on ticket creation
+    sendMaintenanceTicketEmail(ticket);
+
+    res.status(201).json(ticket);
   } catch (err) {
     res.status(500).json({ error: "Failed to create maintenance log" });
   }
@@ -56,18 +71,60 @@ router.put("/:id", async (req, res) => {
     const rawId = req.params.id;
     const isNumeric = /^\d+$/.test(rawId);
 
+    // Use separate simple queries to prevent type deduction errors (Bug Fix)
+    let existing;
+    if (isNumeric) {
+      existing = await query(
+        `SELECT * FROM maintenance_logs WHERE id = $1`,
+        [parseInt(rawId, 10)]
+      );
+    } else {
+      existing = await query(
+        `SELECT * FROM maintenance_logs WHERE UPPER(ticket_id) = UPPER($1)`,
+        [rawId]
+      );
+    }
+
+    if (existing.rows.length === 0) {
+      return res.status(404).json({ error: "Ticket not found" });
+    }
+
+    const current = existing.rows[0];
+    const finalStatus = status !== undefined ? status : current.status;
+    const finalDesc = description !== undefined ? description : current.description;
+    const finalCost = cost !== undefined ? cost : current.cost;
+    const finalAssigned = assigned_to !== undefined ? assigned_to : current.assigned_to;
+
+    // Resolve completed_at in JS to keep the SQL query extremely simple
+    let completedAt = current.completed_at;
+    if (status !== undefined) {
+      completedAt = status === 'completed' ? new Date() : null;
+    }
+
     const result = await query(`
       UPDATE maintenance_logs
-      SET status=$1, description=$2, cost=$3, assigned_to=$4,
-          completed_at = CASE WHEN $1 = 'completed' THEN NOW() ELSE NULL END,
-          updated_at=NOW()
-      WHERE (CASE WHEN $5 = true THEN id = $6 ELSE false END)
-         OR UPPER(ticket_id) = UPPER($7)
+      SET status = $1,
+          description = $2,
+          cost = $3,
+          assigned_to = $4,
+          completed_at = $5,
+          updated_at = NOW()
+      WHERE id = $6
       RETURNING *
-    `, [status, description, cost || null, assigned_to || null, isNumeric, isNumeric ? parseInt(rawId, 10) : 0, rawId]);
+    `, [finalStatus, finalDesc, finalCost, finalAssigned, completedAt, current.id]);
 
-    if (result.rows.length === 0) return res.status(404).json({ error: "Ticket not found" });
-    res.json(result.rows[0]);
+    const updatedTicket = result.rows[0];
+
+    // Automatically sync asset status when maintenance ticket status changes (User Feature request)
+    if (updatedTicket.asset_id) {
+      if (updatedTicket.status === 'in_progress') {
+        await query("UPDATE assets SET status = 'repair', updated_at = NOW() WHERE id = $1 AND status != 'retired'", [updatedTicket.asset_id]);
+      } else if (updatedTicket.status === 'completed' || updatedTicket.status === 'pending') {
+        await query("UPDATE assets SET status = 'available', updated_at = NOW() WHERE id = $1 AND status != 'retired'", [updatedTicket.asset_id]);
+      }
+    }
+
+    res.json(updatedTicket);
   } catch (err) {
     console.error("Update ticket error:", err.message);
     res.status(500).json({ error: "Failed to update maintenance log" });

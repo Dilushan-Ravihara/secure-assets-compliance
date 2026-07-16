@@ -341,3 +341,37 @@ html.light .border-primary {
   border-color: #0284c7 !important;
 }
 
+/* ─── Print Media Styles (PDF Export) ──────────────────────────────────────── */
+@media print {
+  /* Hide sidebar, topbar, and unnecessary UI elements */
+  aside, header, button, .print-hide {
+    display: none !important;
+  }
+  
+  /* Force light theme for printing to save ink and improve readability */
+  body, .glass-panel {
+    background: white !important;
+    color: black !important;
+    box-shadow: none !important;
+    border: 1px solid #ccc !important;
+  }
+  
+  /* Ensure text colors are dark */
+  h1, h2, h3, h4, h5, h6, p, span, div {
+    color: black !important;
+  }
+  
+  /* Reset margins for full page width */
+  main {
+    margin: 0 !important;
+    padding: 20px !important;
+    width: 100% !important;
+  }
+  
+  /* Prevent page breaks inside cards */
+  .glass-panel {
+    page-break-inside: avoid;
+    margin-bottom: 20px;
+  }
+}
+

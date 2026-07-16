@@ -33,10 +33,10 @@ async function seedData() {
       const purchaseDate = new Date(Date.now() - (1 + Math.floor(Math.random() * 3)) * 365 * 24 * 60 * 60 * 1000);
 
       await query(`
-        INSERT INTO assets (asset_id, serial_number, brand, model, category, status, condition, purchase_cost, purchase_date, location, assigned_to)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        INSERT INTO assets (asset_id, serial_number, brand, model, category, status, condition, location, assigned_to)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         ON CONFLICT (asset_id) DO NOTHING;
-      `, [assetId, `SN-${Math.random().toString(36).substring(2, 10).toUpperCase()}`, brand, model, category, status, condition, purchaseCost, purchaseDate, location, assignedTo]);
+      `, [assetId, `SN-${Math.random().toString(36).substring(2, 10).toUpperCase()}`, brand, model, category, status, condition, location, assignedTo]);
 
       // Seed baseline telemetry for the asset
       const telCheck = await query(`SELECT COUNT(*) FROM device_telemetry WHERE device_id = $1`, [assetId]);

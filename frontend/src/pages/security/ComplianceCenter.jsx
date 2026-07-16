@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { FiShield, FiCheckCircle, FiXCircle, FiInfo, FiActivity, FiUploadCloud, FiAlertTriangle, FiDownload, FiCheck, FiCpu, FiRefreshCw, FiTrash2 } from 'react-icons/fi';
 import axios from 'axios';
 import { socket } from '../../services/socket';
@@ -64,6 +64,25 @@ const AUDIT_TEMPLATES = [
     }
   },
   {
+    id: 'remote-control',
+    title: '🌐 Remote Device Control',
+    desc: 'System with active remote access sessions, open administrative ports, and TeamViewer/AnyDesk software.',
+    data: {
+      host_id: "AS1099",
+      device_name: "Support Desk Station",
+      os_name: "Windows 11",
+      os_version: "22H2 Pro",
+      ip_address: "192.168.1.99",
+      antivirus: true,
+      firewall: false,
+      cpu: 32.8,
+      ram: 58.1,
+      disk: 44.5,
+      os_outdated: false,
+      installed_apps: ["Google Chrome", "TeamViewer", "AnyDesk", "VNC Server"]
+    }
+  },
+  {
     id: 'invalid-schema',
     title: '❌ Schema Error Tester',
     desc: 'Payload containing invalid type formats to test structured backend validations.',
@@ -79,6 +98,7 @@ const AUDIT_TEMPLATES = [
 const ComplianceCenter = () => {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('policies'); // 'policies' | 'vulnerabilities' | 'importer'
+  const activeTabRef = useRef('policies'); // Bug #5 fix: ref always tracks latest tab for socket closures
   const [policies, setPolicies] = useState([]);
   const [, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -130,19 +150,20 @@ const ComplianceCenter = () => {
     fetchComplianceData();
 
     // Listen to WebSocket events to update stats & policies in real-time
+    // Bug #5 fix: use activeTabRef instead of activeTab to avoid stale closure
     socket.on('live-update', () => {
       fetchComplianceData(true);
-      if (activeTab === 'importer') fetchAuditHistory(true);
+      if (activeTabRef.current === 'importer') fetchAuditHistory(true);
     });
 
     socket.on('security-alert', () => {
       fetchComplianceData(true);
-      if (activeTab === 'importer') fetchAuditHistory(true);
+      if (activeTabRef.current === 'importer') fetchAuditHistory(true);
     });
 
     socket.on('alert-resolved', () => {
       fetchComplianceData(true);
-      if (activeTab === 'importer') fetchAuditHistory(true);
+      if (activeTabRef.current === 'importer') fetchAuditHistory(true);
     });
 
     return () => {
@@ -150,7 +171,9 @@ const ComplianceCenter = () => {
       socket.off('security-alert');
       socket.off('alert-resolved');
     };
-  }, [activeTab]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Mount once — socket handlers use ref so no re-registration needed
+
 
   useEffect(() => {
     if (activeTab === 'vulnerabilities') {
@@ -492,10 +515,11 @@ const ComplianceCenter = () => {
       setPatchingState(prev => ({ ...prev, [patchKey]: 'done' }));
       showNotification(`✓ Synced & Patched: ${violationType} successfully resolved on ${hostId}`);
       
-      // Update uploadResult violations and details locally
+      // Update uploadResult violations and detail flags optimistically (Bug #8 fix: no local risk calc)
       setUploadResult(prev => {
         if (!prev || prev.host_id !== hostId) return prev;
         
+        // Update boolean flags for immediate visual feedback
         const updatedDetails = { ...prev.details };
         if (violationType === 'antivirus') updatedDetails.antivirus = true;
         if (violationType === 'firewall') updatedDetails.firewall = true;
@@ -503,6 +527,7 @@ const ComplianceCenter = () => {
         if (violationType === 'kill_apps') updatedDetails.unauthorized_software_found = false;
         if (violationType === 'usb_restrict') updatedDetails.usb_restricted = true;
         
+        // Remove resolved violations from the list
         const updatedViolations = prev.violations.filter(v => {
           if (violationType === 'antivirus' && v.toLowerCase().includes('antivirus')) return false;
           if (violationType === 'firewall' && v.toLowerCase().includes('firewall')) return false;
@@ -512,24 +537,10 @@ const ComplianceCenter = () => {
           return true;
         });
         
-        // Recalculate risk score locally for immediate UI update
-        let score = 10;
-        if (updatedDetails.antivirus === false) score += 30;
-        if (updatedDetails.firewall === false) score += 25;
-        if (updatedDetails.os_outdated === true) score += 20;
-        if (updatedDetails.unauthorized_software_found === true) score += 25;
-        if (updatedDetails.usb_restricted === false) score += 15;
-        if (score > 100) score = 100;
-        
-        let level = "LOW";
-        if (score >= 75) level = "CRITICAL";
-        else if (score >= 45) level = "HIGH";
-        else if (score >= 25) level = "MEDIUM";
-        
+        // Note: risk_score and risk_level are NOT recalculated here (Bug #8 fix).
+        // Backend formula differs from frontend. The score will update via the next WebSocket push.
         return {
           ...prev,
-          risk_score: score,
-          risk_level: level,
           violations: updatedViolations,
           details: updatedDetails
         };
@@ -757,7 +768,7 @@ const ComplianceCenter = () => {
       {/* Tabs */}
       <div className="flex border-b border-slate-800/80 mb-6 gap-2">
         <button
-          onClick={() => setActiveTab('policies')}
+          onClick={() => { setActiveTab('policies'); activeTabRef.current = 'policies'; }}
           className={`px-6 py-3 font-mono text-xs uppercase tracking-widest border-b-2 transition-all font-bold ${
             activeTab === 'policies'
               ? 'border-primary text-primary shadow-[0_4px_10px_-4px_rgba(0,240,255,0.4)] bg-primary/5'
@@ -767,7 +778,7 @@ const ComplianceCenter = () => {
           ✅ SECURITY RULES
         </button>
         <button
-          onClick={() => setActiveTab('vulnerabilities')}
+          onClick={() => { setActiveTab('vulnerabilities'); activeTabRef.current = 'vulnerabilities'; }}
           className={`px-6 py-3 font-mono text-xs uppercase tracking-widest border-b-2 transition-all font-bold ${
             activeTab === 'vulnerabilities'
               ? 'border-primary text-primary shadow-[0_4px_10px_-4px_rgba(0,240,255,0.4)] bg-primary/5'
@@ -777,7 +788,7 @@ const ComplianceCenter = () => {
           🛡️ KNOWN SYSTEM RISKS
         </button>
         <button
-          onClick={() => setActiveTab('importer')}
+          onClick={() => { setActiveTab('importer'); activeTabRef.current = 'importer'; }}
           className={`px-6 py-3 font-mono text-xs uppercase tracking-widest border-b-2 transition-all font-bold ${
             activeTab === 'importer'
               ? 'border-primary text-primary shadow-[0_4px_10px_-4px_rgba(0,240,255,0.4)] bg-primary/5'

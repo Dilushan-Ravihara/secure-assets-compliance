@@ -26,7 +26,11 @@ const metricColor = (v) => v > 85 ? 'text-danger' : v > 60 ? 'text-warning' : 't
 const barColor    = (v) => v > 85 ? '#ff003c'    : v > 60 ? '#ffb700'    : '#00ff66';
 
 // ── Tiny inline sparkline (SVG, no library) ─────────────────────────────────
+// Bug #11 fix: module-level counter so each Spark instance gets a unique gradient ID
+let sparkIdCounter = 0;
 const Spark = ({ data, color, height = 32, width = 100 }) => {
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const gradId = `sg-${color.replace('#', '')}-${++sparkIdCounter}`;
   if (!data || data.length < 2) return <div style={{ width, height }} className="opacity-20 bg-slate-800 rounded" />;
   const max  = Math.max(...data, 1);
   const pts  = data.map((v, i) => [
@@ -38,12 +42,12 @@ const Spark = ({ data, color, height = 32, width = 100 }) => {
   return (
     <svg width={width} height={height} className="overflow-visible flex-shrink-0">
       <defs>
-        <linearGradient id={`sg-${color}`} x1="0" y1="0" x2="0" y2="1">
+        <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor={color} stopOpacity="0.25" />
           <stop offset="100%" stopColor={color} stopOpacity="0" />
         </linearGradient>
       </defs>
-      <path d={area} fill={`url(#sg-${color})`} />
+      <path d={area} fill={`url(#${gradId})`} />
       <path d={path} stroke={color} strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
       <circle cx={pts[pts.length-1][0]} cy={pts[pts.length-1][1]} r="2.5" fill={color} />
     </svg>
@@ -101,6 +105,11 @@ const LiveTelemetry = () => {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('analytics');
 
+  // Device Notes State
+  const [deviceNotes, setDeviceNotes] = useState([]);
+  const [newNote, setNewNote] = useState('');
+  const [loadingNotes, setLoadingNotes] = useState(false);
+
   // Search & Filters state
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL'); // 'ALL' | 'ONLINE' | 'OFFLINE'
@@ -133,6 +142,57 @@ const LiveTelemetry = () => {
     setToastMsg(msg);
     setShowToast(true);
     setTimeout(() => setShowToast(false), 3000);
+  };
+
+  // Fetch Device Notes
+  useEffect(() => {
+    if (!selected) {
+      setDeviceNotes([]);
+      return;
+    }
+    const fetchNotes = async () => {
+      setLoadingNotes(true);
+      try {
+        const token = localStorage.getItem('token');
+        const config = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
+        const res = await axios.get(`http://localhost:5000/api/device-notes/${selected}`, config);
+        if (res.data.success) {
+          setDeviceNotes(res.data.data);
+        }
+      } catch (err) {
+        console.error('Failed to load notes', err);
+      } finally {
+        setLoadingNotes(false);
+      }
+    };
+    fetchNotes();
+  }, [selected]);
+
+  const handleAddNote = async (e) => {
+    e.preventDefault();
+    if (!newNote.trim() || !selected) return;
+    try {
+      const token = localStorage.getItem('token');
+      const config = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
+      const res = await axios.post(`http://localhost:5000/api/device-notes`, {
+        device_id: selected,
+        note: newNote
+      }, config);
+      if (res.data.success) {
+        // Optimistically add to UI
+        const addedNote = {
+          ...res.data.data,
+          author_name: currentUser.name || 'Unknown',
+          created_at: new Date().toISOString()
+        };
+        setDeviceNotes([addedNote, ...deviceNotes]);
+        setNewNote('');
+        triggerToast("✓ Note added successfully.");
+      }
+    } catch (err) {
+      console.error('Failed to add note', err);
+      triggerToast("❌ Failed to add note.");
+    }
   };
 
   // Retrieve the latest telemetry readings from the server
@@ -896,6 +956,44 @@ const LiveTelemetry = () => {
                   <div className="flex justify-between"><span className="text-slate-600">Risk Level</span>
                     <span style={{ color: riskColor(selectedDev.risk_score||0) }}>{riskLabel(selectedDev.risk_score||0)} ({selectedDev.risk_score||0})</span>
                   </div>
+                </div>
+
+                {/* ── Device Notes Section ── */}
+                <div className="border-t border-slate-800 pt-3 mt-2">
+                  <div className="text-[11px] text-slate-400 font-bold uppercase tracking-wider mb-2 flex justify-between items-center">
+                    <span>Incident Notes</span>
+                  </div>
+                  <div className="max-h-40 overflow-y-auto custom-scrollbar space-y-2 mb-3">
+                    {loadingNotes ? (
+                      <div className="text-[10px] text-slate-500 font-mono">Loading notes...</div>
+                    ) : deviceNotes.length === 0 ? (
+                      <div className="text-[10px] text-slate-600 font-mono">No notes recorded for this device.</div>
+                    ) : (
+                      deviceNotes.map(note => (
+                        <div key={note.id} className="bg-slate-900/60 p-2 rounded border border-slate-800/50">
+                          <div className="flex justify-between items-start mb-1 text-[9px] font-mono">
+                            <span className="text-primary font-bold">{note.author_name || 'System'}</span>
+                            <span className="text-slate-500">{new Date(note.created_at).toLocaleDateString()} {new Date(note.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                          </div>
+                          <div className="text-[11px] text-slate-300 leading-snug">{note.note}</div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                  {canControl && (
+                    <form onSubmit={handleAddNote} className="flex gap-2">
+                      <input 
+                        type="text" 
+                        value={newNote}
+                        onChange={(e) => setNewNote(e.target.value)}
+                        placeholder="Add a new note..."
+                        className="flex-1 bg-slate-900 border border-slate-700 text-xs px-2 py-1.5 rounded focus:outline-none focus:border-primary text-slate-200 placeholder-slate-600 font-mono"
+                      />
+                      <button type="submit" disabled={!newNote.trim()} className="btn-primary py-1 px-3 text-[10px] whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed">
+                        ADD
+                      </button>
+                    </form>
+                  )}
                 </div>
               </div>
             ) : (

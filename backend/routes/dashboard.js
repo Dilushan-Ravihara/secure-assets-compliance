@@ -17,7 +17,7 @@ router.get("/stats", async (req, res) => {
           COUNT(*)                                       AS total_assets,
           COUNT(*) FILTER (WHERE status = 'in_use')      AS active_assets,
           COUNT(*) FILTER (WHERE status = 'repair')      AS in_repair,
-          COUNT(*) FILTER (WHERE warranty_expiry < NOW()) AS expired_warranty
+          0                                              AS expired_warranty
         FROM assets
       `),
       // Security summary
@@ -47,11 +47,15 @@ router.get("/stats", async (req, res) => {
       `),
     ]);
 
+    const io = req.app.get("socketio");
+    const activeSessions = io ? io.sockets.sockets.size : 0;
+
     res.json({
       assets:      assets.rows[0],
       security:    security.rows[0],
       maintenance: maintenance.rows[0],
       telemetry:   telemetry.rows[0],
+      active_sessions: activeSessions || 1, // Fallback to 1 representing the current admin user
     });
   } catch (err) {
     console.error("Dashboard stats error:", err);

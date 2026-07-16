@@ -1,0 +1,19 @@
+{
+  "systemName": "SecureAssets Enterprise",
+  "timezone": "Asia/Colombo (GMT+5:30)",
+  "autoSync": true,
+  "strictMode": false,
+  "enforce2fa": false,
+  "passwordPolicy": "Every 90 Days",
+  "smsAlerts": true,
+  "emailReport": true,
+  "adminEmails": "dilushanravihara@gmail.com",
+  "backupFrequency": "Daily at 02:00 AM",
+  "cloudProvider": "Google Cloud Storage",
+  "lastBackupTime": "12:36:17 AM",
+  "smtpUser": "",
+  "smtpPass": "",
+  "smtpHost": "",
+  "smtpFrom": "",
+  "smtpPort": ""
+}

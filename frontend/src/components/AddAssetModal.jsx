@@ -210,6 +210,26 @@ const AddAssetModal = ({ isOpen, onClose, onAssetAdded, onAssetUpdated, initialD
                 </div>
               </div>
 
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="cyber-label">Status</label>
+                  <select name="status" value={formData.status} onChange={handleChange} className="cyber-input w-full text-slate-300">
+                    <option value="available">Available</option>
+                    <option value="in_use">In Use</option>
+                    <option value="repair">Under Repair</option>
+                    <option value="retired">Retired</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="cyber-label">Condition</label>
+                  <select name="condition" value={formData.condition} onChange={handleChange} className="cyber-input w-full text-slate-300">
+                    <option value="good">Good</option>
+                    <option value="fair">Fair</option>
+                    <option value="poor">Poor</option>
+                  </select>
+                </div>
+              </div>
+
               <div className="pt-6 border-t border-slate-800 flex justify-end gap-3 mt-8">
                 <button type="button" onClick={onClose} className="px-6 py-2 rounded font-bold font-mono text-slate-400 hover:text-white hover:bg-white/5 transition-colors">
                   CANCEL

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { FiShield, FiAlertOctagon, FiCpu, FiCheckCircle, FiActivity, FiServer } from 'react-icons/fi';
 import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, BarElement, Title, Tooltip, Legend, ArcElement } from 'chart.js';
 import { Line, Doughnut } from 'react-chartjs-2';
@@ -14,18 +14,32 @@ const MainDashboard = () => {
   const [showToast, setShowToast] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
 
+  const abortRef = useRef(null); // Bug #6 fix: track abort controller to cancel in-flight requests on unmount
+
   // Fetch stats on load and set a 5-second interval timer to keep things fresh
   useEffect(() => {
     fetchDashboardData();
     const interval = setInterval(fetchDashboardData, 5000); // Auto-refresh every 5s
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      // Cancel any pending axios request to avoid state update on unmounted component
+      if (abortRef.current) abortRef.current.abort();
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Pull counts and active alerts in parallel
   const fetchDashboardData = async () => {
+    // Cancel previous in-flight request before starting a new one
+    if (abortRef.current) abortRef.current.abort();
+    abortRef.current = new AbortController();
+    const signal = abortRef.current.signal;
+
     try {
       const token = localStorage.getItem('token');
-      const config = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
+      const config = token
+        ? { headers: { Authorization: `Bearer ${token}` }, signal }
+        : { signal };
       
       const [statsRes, alertsRes, historyRes] = await Promise.all([
         axios.get('http://localhost:5000/api/dashboard/stats', config),
@@ -37,6 +51,8 @@ const MainDashboard = () => {
       setAlerts(alertsRes.data);
       setThreatHistory(historyRes.data || []);
     } catch (error) {
+      // Ignore cancellation errors — these happen on unmount and are expected
+      if (axios.isCancel(error) || error.name === 'CanceledError') return;
       console.error('Failed to fetch dashboard data', error);
     } finally {
       setLoading(false);
