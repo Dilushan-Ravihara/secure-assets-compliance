@@ -117,7 +117,7 @@ router.post("/discover", authenticateToken, async (req, res) => {
     const assetId = `AST-${randomId}`;
     await query(`
       INSERT INTO assets (asset_id, serial_number, brand, model, category, status, location)
-      VALUES ($1, $2, 'IoT Core', $3, 'IoT Device', 'in_use', $4)
+      VALUES ($1, $2, 'IoT Core', $3, 'IoT Device', 'available', $4)
       ON CONFLICT DO NOTHING
     `, [assetId, `SN-IOT-${randomId}`, newDevice.device_name, locName]);
 

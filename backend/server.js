@@ -180,7 +180,7 @@ app.post("/device-data", async (req, res) => {
         
         await query(`
           INSERT INTO assets (asset_id, serial_number, brand, model, category, status, condition, location, notes)
-          VALUES ($1, $2, $3, $4, $5, 'in_use', 'good', $6, 'Auto-registered via active EDR Agent telemetry')
+          VALUES ($1, $2, $3, $4, $5, 'available', 'good', $6, 'Auto-registered via active EDR Agent telemetry')
           ON CONFLICT (asset_id) DO NOTHING
         `, [data.device_id, serial, brand, model, category, location]);
 
